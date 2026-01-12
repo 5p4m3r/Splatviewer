@@ -4,6 +4,8 @@ A vibe-coded WebXR-based augmented reality viewer for 3D Gaussian Splat files. B
 
 use at own your risk ;)
 
+Live example at https://toniomundry.com/splatviewer for fullpage viewer and https://toniomundry.com/splatviewer/multi-example.html for multiple viewers on one page
+
 ## Features
 
 - **Custom Web Component**: Simple `<splat-viewer>` tag with attribute-based configuration
