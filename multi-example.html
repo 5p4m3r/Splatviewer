@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' data:; worker-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' data:;">
+    <meta name="referrer" content="no-referrer">
+    <title>SplatViewer - Test Demo</title>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "./src/three/three.module.js",
+            "three/addons/": "./src/three/addons/",
+            "@sparkjsdev/spark": "./src/spark/spark.module.js",
+            "stats.js": "./src/stats/Stats.js"
+        }
+    }
+    </script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: auto;
+            min-height: 100vh;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #ffffff;
+            color: #000000;
+            overflow-x: hidden;
+            overflow-y: auto;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 32px;
+            padding: 24px 0;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 16px;
+            color: #1a1a1a;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+        }
+
+        .header p {
+            font-size: 1.1em;
+            color: #333333;
+            line-height: 1.7;
+            max-width: 700px;
+            margin: 0 auto 12px;
+        }
+
+        .header .subtitle {
+            font-size: 0.95em;
+            color: #666666;
+            margin-top: 8px;
+        }
+
+        .intro {
+            margin-bottom: 32px;
+            padding: 24px;
+            background: #f5f5f5;
+        }
+
+        .intro h2 {
+            font-size: 1.5em;
+            margin-bottom: 16px;
+            color: #1a1a1a;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+        }
+
+        .intro p {
+            color: #333333;
+            font-size: 1em;
+            margin-bottom: 12px;
+        }
+
+        .intro p:last-child {
+            margin-bottom: 0;
+        }
+
+        .intro code {
+            padding: 2px 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            color: #2c3e50;
+        }
+
+        .instructions {
+            margin-bottom: 32px;
+            padding: 24px;
+            background: #f5f5f5;
+        }
+
+        .instructions h2 {
+            font-size: 1.5em;
+            margin-bottom: 20px;
+            color: #1a1a1a;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+        }
+
+        .instructions-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 24px;
+        }
+
+        .instructions-section {
+            background: #ffffff;
+            padding: 20px;
+        }
+
+        .instructions-section h3 {
+            font-size: 1.1em;
+            margin-bottom: 12px;
+            color: #1a1a1a;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+
+        .instructions-section ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        .instructions-section li {
+            color: #444444;
+            font-size: 0.95em;
+            line-height: 1.8;
+            padding-left: 20px;
+            position: relative;
+            margin-bottom: 8px;
+        }
+
+        .instructions-section li:before {
+            content: "→";
+            position: absolute;
+            left: 0;
+            color: #666666;
+            font-weight: bold;
+        }
+
+        .viewers-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 24px;
+            margin-bottom: 32px;
+        }
+
+        .viewer-wrapper {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .viewer-label {
+            padding: 12px 16px;
+            background: #4a4a4a;
+            border: 1px solid #4a4a4a;
+            border-bottom: none;
+            color: #ffffff;
+            font-weight: 600;
+            font-size: 0.95em;
+            text-align: center;
+        }
+
+        .viewer-container {
+            width: 100%;
+            height: 60vh;
+            min-height: 400px;
+            overflow: hidden;
+            background: #ffffff00;
+            border: 1px solid #4a4a4a;
+            border-top: none;
+        }
+
+        splat-viewer {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .compatibility {
+            margin-top: 32px;
+            padding: 24px;
+            background: #f5f5f5;
+        }
+
+        .compatibility h2 {
+            font-size: 1.5em;
+            margin-bottom: 20px;
+            color: #1a1a1a;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+        }
+
+        .compatibility h3 {
+            margin-top: 24px;
+            margin-bottom: 16px;
+            color: #333333;
+            font-size: 1.1em;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .compatibility-table {
+            overflow-x: auto;
+            margin-top: 12px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+
+        th, td {
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        th {
+            background: #f9f9f9;
+            color: #1a1a1a;
+            font-weight: 600;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        td {
+            color: #444444;
+        }
+
+        .status-ok {
+            color: #4caf50;
+            font-weight: 500;
+        }
+
+        .status-warning {
+            color: #ff9800;
+            font-weight: 500;
+        }
+
+        .status-error {
+            color: #f44336;
+            font-weight: 500;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 2em;
+            }
+
+            .header p {
+                font-size: 1em;
+                padding: 0 10px;
+            }
+
+            .viewers-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .viewer-container {
+                height: 50vh;
+                min-height: 350px;
+            }
+
+            .instructions-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Splat-Viewer</h1>
+            <p>
+                A powerful WebXR-based augmented reality viewer for 3D Gaussian Splat files. 
+                Experience immersive AR on mobile devices or explore 3D scenes on desktop with intuitive controls.
+            </p>
+            <p class="subtitle">
+                Built with Three.js and Spark.js for high-performance rendering
+            </p>
+        </div>
+
+        <div class="intro">
+            <h2>About This Project</h2>
+            <p>
+                SplatViewer is a custom web component that brings 3D Gaussian Splat point clouds to the web. 
+                It supports multiple file formats including <code>.splat</code>, <code>.sog</code>, and <code>.ply</code>, 
+                providing a seamless viewing experience across desktop and mobile devices.
+            </p>
+            <p>
+                The viewer leverages WebXR technology to enable augmented reality experiences on compatible devices, 
+                allowing users to place and interact with 3D splat models in their real-world environment. 
+                On desktop, it provides traditional 3D navigation controls for exploring scenes.
+            </p>
+            <p>
+                This demo showcases the viewer with test files in different formats. All three formats 
+                (<code>test.splat</code>, <code>test.sog</code>, and <code>test.ply</code>) are displayed 
+                simultaneously in separate containers below.
+            </p>
+        </div>
+
+        <div class="instructions">
+            <h2>Interaction Instructions</h2>
+            <div class="instructions-grid">
+                <div class="instructions-section">
+                    <h3>Desktop Mode</h3>
+                    <ul>
+                        <li>Left-click + drag: Rotate camera around the scene</li>
+                        <li>Right-click + drag: Pan the camera view</li>
+                        <li>Scroll wheel: Zoom in and out</li>
+                        <li>Touch gestures: Multi-touch supported on touch devices</li>
+                    </ul>
+                </div>
+                <div class="instructions-section">
+                    <h3>AR Mode (Mobile)</h3>
+                    <ul>
+                        <li>Tap screen: Place splat on detected floor surface</li>
+                        <li>Single-finger drag (lower 2/3): Translate splat on ground</li>
+                        <li>Single-finger drag (upper 1/3): Rotate splat around Y-axis</li>
+                        <li>Two-finger pinch: Scale the splat model</li>
+                        <li>Exit button: Return to desktop viewing mode</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="viewers-grid">
+            <div class="viewer-wrapper">
+                <div class="viewer-label">SatsumaVase.splat</div>
+                <div class="viewer-container">
+                    <splat-viewer
+                        splat-src="SatsumaVase.splat"
+                        camera-position="0,1,2"
+                        camera-look-at="0,0.8,0"
+                        transform-scale="1,1,1"
+                        transform-position="0,0,0"
+                        transform-rotate="0,0,180"
+                        transform-ar-scale="0.1,0.1,0.1"
+                        transform-ar-position="0,0,0"
+                        transform-ar-rotate="0,0,180"
+                        min-scale="0.05"
+                        max-scale="5.0"
+                        enable-ar="true"
+                        theme="light"
+                        fps="true">
+                    </splat-viewer>
+                </div>
+            </div>
+
+            <div class="viewer-wrapper">
+                <div class="viewer-label">SatsumaVase.sog</div>
+                <div class="viewer-container">
+                    <splat-viewer
+                        splat-src="SatsumaVase.sog"
+                        camera-position="0,1,2"
+                        camera-look-at="0,0.8,0"
+                        transform-scale="1,1,1"
+                        transform-position="0,0,0"
+                        transform-rotate="0,0,180"
+                        transform-ar-scale="0.1,0.1,0.1"
+                        transform-ar-position="0,0,0"
+                        transform-ar-rotate="0,0,180"
+                        min-scale="0.05"
+                        max-scale="5.0"
+                        enable-ar="true"
+                        theme="light"
+                        fps="true">
+                    </splat-viewer>
+                </div>
+            </div>
+
+            <div class="viewer-wrapper">
+                <div class="viewer-label">SatsumaVase.ply</div>
+                <div class="viewer-container">
+                    <splat-viewer
+                        splat-src="SatsumaVase.ply"
+                        camera-position="0,1,2"
+                        camera-look-at="0,0.8,0"
+                        transform-scale="1,1,1"
+                        transform-position="0,0,0"
+                        transform-rotate="0,0,180"
+                        transform-ar-scale="1,1,1"
+                        transform-ar-position="0,0,0"
+                        transform-ar-rotate="0,0,180"
+                        min-scale="0.05"
+                        max-scale="5.0"
+                        enable-ar="true"
+                        theme="light"
+                        fps="true">
+                    </splat-viewer>
+                </div>
+            </div>
+        </div>
+
+        <div class="compatibility">
+            <h2>Browser Compatibility</h2>
+            
+            <h3>AR Mode Support</h3>
+            <div class="compatibility-table">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Platform</th>
+                            <th>Browser</th>
+                            <th>AR Support</th>
+                            <th>Notes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Android</strong></td>
+                            <td>Chrome/Edge</td>
+                            <td class="status-ok">✅ Full Support</td>
+                            <td>Recommended platform for AR</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Android</strong></td>
+                            <td>Samsung Internet</td>
+                            <td class="status-ok">✅ Full Support</td>
+                            <td>WebXR enabled by default</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Android</strong></td>
+                            <td>Firefox</td>
+                            <td class="status-warning">⚠️ Limited</td>
+                            <td>May have compatibility issues</td>
+                        </tr>
+                        <tr>
+                            <td><strong>iOS</strong></td>
+                            <td>Safari</td>
+                            <td class="status-error">❌ Not Supported</td>
+                            <td>WebXR not available on iOS</td>
+                        </tr>
+                        <tr>
+                            <td><strong>iOS</strong></td>
+                            <td>Chrome/Edge</td>
+                            <td class="status-error">❌ Not Supported</td>
+                            <td>Uses Safari engine (no WebXR)</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Desktop</strong></td>
+                            <td>Chrome/Edge</td>
+                            <td class="status-warning">⚠️ Experimental</td>
+                            <td>Limited AR device support</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Desktop</strong></td>
+                            <td>Firefox</td>
+                            <td class="status-error">❌ Not Supported</td>
+                            <td>No WebXR AR support</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3>Desktop Viewing Mode</h3>
+            <div class="compatibility-table">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Platform</th>
+                            <th>Browser</th>
+                            <th>Support</th>
+                            <th>Notes</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Windows</strong></td>
+                            <td>Chrome/Edge</td>
+                            <td class="status-ok">✅ Full Support</td>
+                            <td>Recommended browser</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Windows</strong></td>
+                            <td>Firefox</td>
+                            <td class="status-ok">✅ Full Support</td>
+                            <td>Full WebGL 2.0 support</td>
+                        </tr>
+                        <tr>
+                            <td><strong>macOS</strong></td>
+                            <td>Safari</td>
+                            <td class="status-ok">✅ Full Support</td>
+                            <td>Native WebGL support</td>
+                        </tr>
+                        <tr>
+                            <td><strong>macOS</strong></td>
+                            <td>Chrome/Edge</td>
+                            <td class="status-ok">✅ Full Support</td>
+                            <td>Optimal performance</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Linux</strong></td>
+                            <td>Chrome/Edge</td>
+                            <td class="status-ok">✅ Full Support</td>
+                            <td>Full feature support</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Linux</strong></td>
+                            <td>Firefox</td>
+                            <td class="status-ok">✅ Full Support</td>
+                            <td>Full feature support</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="splat-viewer.js"></script>
+</body>
+</html>
+

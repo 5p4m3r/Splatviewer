@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' data:; worker-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' data:;">
+    <meta name="referrer" content="no-referrer">
+    <title>Gaussian Splat AR Viewer</title>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "./src/three/three.module.js",
+            "three/addons/": "./src/three/addons/",
+            "@sparkjsdev/spark": "./src/spark/spark.module.js",
+            "stats.js": "./src/stats/Stats.js"
+        }
+    }
+    </script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100vh;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a1a;
+            touch-action: none;
+        }
+
+        /* Minimal styles - splat-viewer.js injects the full component styles */
+        /* These are just basic fallbacks before the component loads */
+        splat-viewer {
+            display: block;
+            width: 100%;
+            height: 100vh;
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <splat-viewer
+         splat-src="SatsumaVase.compressed.ply"
+         camera-position="0,1,2"
+         camera-look-at="0,0.8,0"
+         transform-scale="1,1,1"
+         transform-position="0,0,0"
+         transform-rotate="180,0,0"
+         transform-ar-scale="0.1,0.1,0.1"
+         transform-ar-position="0,0.0,0"
+         transform-ar-rotate="180,0,0"
+         min-scale="0.05"
+         max-scale="5.0"
+         enable-ar="true"
+         fps="true">
+    </splat-viewer>
+
+    <script type="module" src="splat-viewer.js"></script>
+</body>
+</html>

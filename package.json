@@ -1,0 +1,18 @@
+{
+  "name": "splatviewer",
+  "version": "1.0.0",
+  "description": "Gaussian Splat AR Viewer using Sparkjs and Threejs",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "node server.js",
+    "test": "node test-server.js"
+  },
+  "dependencies": {
+    "@sparkjsdev/spark": "^0.1.10",
+    "three": "^0.178.0"
+  },
+  "devDependencies": {
+    "stats.js": "^0.17.0"
+  }
+}

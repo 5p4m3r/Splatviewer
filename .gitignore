@@ -1,0 +1,63 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+
+# Development/Test files
+dev/
+test-server.js
+test.ply
+test.sog
+test.splat
+PLUGIN_SYSTEM_PLAN.md
+sparkv1/
+
+# Planning/Documentation (optional - uncomment if you don't want these in deployment)
+# PLUGIN_SYSTEM_PLAN.md
+
+# Asset files (uncomment if you want to ignore user-provided content files)
+# *.splat
+# *.sog
+# *.ply
+# *.spz
+# *.compressed.ply
+
+# ============================================
+# DEPLOYMENT FILES (DO NOT IGNORE)
+# ============================================
+# The following files/folders are REQUIRED for deployment:
+#
+# src/                    - Production dependencies (Three.js, Spark.js, Stats.js)
+# splat-viewer.js         - Main viewer component
+# package.json            - NPM configuration
+# package-lock.json       - Dependency lock file
+# README.md               - Documentation
+# LICENSE                 - License file
+# example.html            - Example usage
+# multi-example.html      - Multi-viewer example
+# *.html                  - Any HTML files using the viewer
+#
+# Note: src/ folder contains sandboxed production dependencies
+# that MUST be committed for offline-capable deployment
+
