@@ -156,6 +156,7 @@ That's it! The viewer handles all initialization, UI, and controls automatically
 
 - **Spark.js** (`@sparkjsdev/spark` v0.1.10): High-performance library for rendering Gaussian Splat point clouds with optimized GPU acceleration and WebXR integration
 - **Three.js** (v0.178.0): Industry-standard 3D graphics library providing WebGL rendering, camera controls, and scene management
+- **Stats.js** (v0.17.0): Performance monitoring library for displaying FPS, frame time, and memory usage statistics
 - **WebXR API**: Native browser API for immersive AR/VR experiences, enabling spatial tracking and hit-testing
 - **ES6 Modules**: Modern JavaScript module system for clean code organization
 - **Web Components**: Custom HTML elements for declarative usage
@@ -179,8 +180,10 @@ src/
 │       └── webxr/
 │           ├── ARButton.js
 │           └── XRPlanes.js
-└── spark/
-    └── spark.module.js      # Spark.js library
+├── spark/
+│   └── spark.module.js      # Spark.js library
+└── stats/
+    └── Stats.js             # Stats.js performance monitor
 ```
 
 The application uses an import map to resolve dependencies, and the Content Security Policy (CSP) restricts external connections, ensuring secure, offline-capable deployment.
@@ -345,14 +348,25 @@ splat-transform input.ply output.html
 ### Project Structure
 
 ```
-00_production_Spark/
+SplatViewer/
 ├── src/                    # Local dependencies (sandboxed)
 │   ├── three/             # Three.js library and addons
-│   └── spark/             # Spark.js library
-├── index.html             # Example usage
+│   │   ├── three.module.js
+│   │   ├── three.core.js
+│   │   └── addons/
+│   │       ├── controls/  # OrbitControls, TransformControls
+│   │       └── webxr/      # ARButton, XRPlanes
+│   ├── spark/             # Spark.js library
+│   │   └── spark.module.js
+│   └── stats/             # Stats.js performance monitor
+│       └── Stats.js
+├── example.html           # Single viewer example
+├── multi-example.html     # Multiple viewers example
 ├── splat-viewer.js        # Main viewer component
-├── *.splat                # Splat files (place in root)
 ├── package.json           # NPM dependencies
+├── package-lock.json      # Dependency lock file
+├── LICENSE                # MIT License
+├── .gitignore            # Git ignore rules
 └── README.md              # This file
 ```
 
@@ -365,6 +379,8 @@ All external dependencies are bundled locally in the `src/` folder:
   - Addons: `addons/controls/` and `addons/webxr/`
 - **Spark.js** (v0.1.10): `src/spark/`
   - Main library: `spark.module.js`
+- **Stats.js** (v0.17.0): `src/stats/`
+  - Performance monitor: `Stats.js`
 
 ### Updating Dependencies
 
@@ -382,6 +398,9 @@ To update dependencies:
    
    # Spark.js
    cp node_modules/@sparkjsdev/spark/dist/spark.module.js src/spark/
+   
+   # Stats.js
+   cp node_modules/stats.js/build/stats.min.js src/stats/Stats.js
    ```
 
 ### Local Development
