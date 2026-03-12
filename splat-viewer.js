@@ -1917,6 +1917,72 @@ export class SplatViewer {
     }
 
     /**
+     * Compute the expected XZ footprint of the splat under AR transforms.
+     * Before placement the mesh still carries desktop transforms, so we
+     * go back to the raw geometry bounds and apply the AR scale/rotation
+     * from the component attributes.  After placement the mesh already
+     * has the correct AR transforms, so we use the live world-space box.
+     */
+    getPlacementRingScale() {
+        if (!this.splatMesh) return 1;
+
+        if (this.splatPlaced) {
+            const bb = this.getSplatBoundingBox();
+            if (!bb) return 1;
+            const sz = bb.max.clone().sub(bb.min);
+            return Math.max(0.1, Math.max(sz.x, sz.z) * 0.6);
+        }
+
+        // --- Pre-placement: predict size under AR transforms ---
+        let box = null;
+        if (this.splatMesh.geometry) {
+            if (!this.splatMesh.geometry.boundingBox) {
+                this.splatMesh.geometry.computeBoundingBox();
+            }
+            if (this.splatMesh.geometry.boundingBox) {
+                box = this.splatMesh.geometry.boundingBox.clone();
+            }
+        }
+        if (!box) {
+            box = new window.THREE.Box3().setFromCenterAndSize(
+                new window.THREE.Vector3(0, 0, 0),
+                new window.THREE.Vector3(1, 1, 1)
+            );
+        }
+
+        const tAr = this.options.transformAr;
+        const sx = tAr?.scale?.x || 1;
+        const sy = tAr?.scale?.y || 1;
+        const sz = tAr?.scale?.z || 1;
+        box.min.set(box.min.x * sx, box.min.y * sy, box.min.z * sz);
+        box.max.set(box.max.x * sx, box.max.y * sy, box.max.z * sz);
+
+        if (tAr?.rotate) {
+            const euler = new window.THREE.Euler(
+                (tAr.rotate.x || 0) * Math.PI / 180,
+                (tAr.rotate.y || 0) * Math.PI / 180,
+                (tAr.rotate.z || 0) * Math.PI / 180, 'XYZ');
+            const q = new window.THREE.Quaternion().setFromEuler(euler);
+            const corners = [
+                new window.THREE.Vector3(box.min.x, box.min.y, box.min.z),
+                new window.THREE.Vector3(box.max.x, box.min.y, box.min.z),
+                new window.THREE.Vector3(box.min.x, box.max.y, box.min.z),
+                new window.THREE.Vector3(box.max.x, box.max.y, box.min.z),
+                new window.THREE.Vector3(box.min.x, box.min.y, box.max.z),
+                new window.THREE.Vector3(box.max.x, box.min.y, box.max.z),
+                new window.THREE.Vector3(box.min.x, box.max.y, box.max.z),
+                new window.THREE.Vector3(box.max.x, box.max.y, box.max.z)
+            ];
+            corners.forEach(c => c.applyQuaternion(q));
+            box.makeEmpty();
+            corners.forEach(c => box.expandByPoint(c));
+        }
+
+        const size = box.max.clone().sub(box.min);
+        return Math.max(0.1, Math.max(size.x, size.z) * 0.6);
+    }
+
+    /**
      * Update reticle position based on floor detection (model-viewer approach)
      * Called in frame loop when initialHitSource has a hit
      * Does NOT auto-place - just shows the reticle. User must tap to place.
@@ -1938,10 +2004,12 @@ export class SplatViewer {
             return;
         }
         
-        // Floor detected - update reticle position
+        // Floor detected - update reticle position and size to match splat
         if (this.reticle) {
             this.reticle.visible = true;
             this.reticle.position.copy(hitPoint);
+            const ringScale = this.getPlacementRingScale();
+            this.reticle.scale.set(ringScale, ringScale, 1);
             // Keep rotation fixed (flat on floor) - don't apply hit rotation
             // The reticle is already rotated -90° on X to lie flat
         }
@@ -2053,14 +2121,9 @@ export class SplatViewer {
             this.splatMesh.position.z
         );
         
-        // Scale ring based on splat size
-        const boundingBox = this.getSplatBoundingBox();
-        if (boundingBox) {
-            const size = boundingBox.max.clone().sub(boundingBox.min);
-            const maxSize = Math.max(size.x, size.z) * 0.6;
-            const ringScale = Math.max(1, maxSize);
-            this.manipulationRing.scale.set(ringScale, ringScale, 1);
-        }
+        // Scale ring to match splat footprint
+        const ringScale = this.getPlacementRingScale();
+        this.manipulationRing.scale.set(ringScale, ringScale, 1);
         
         // Show immediately
         this.manipulationRing.visible = true;
@@ -2084,14 +2147,9 @@ export class SplatViewer {
             this.splatMesh.position.z
         );
         
-        // Update scale if splat is being scaled
-        const boundingBox = this.getSplatBoundingBox();
-        if (boundingBox) {
-            const size = boundingBox.max.clone().sub(boundingBox.min);
-            const maxSize = Math.max(size.x, size.z) * 0.6;
-            const ringScale = Math.max(1, maxSize);
-            this.manipulationRing.scale.set(ringScale, ringScale, 1);
-        }
+        // Update scale to follow splat size (e.g. during pinch)
+        const ringScale = this.getPlacementRingScale();
+        this.manipulationRing.scale.set(ringScale, ringScale, 1);
     }
 
     /**
@@ -2482,6 +2540,9 @@ export class SplatViewer {
             transform.position.y,
             transform.position.z
         );
+        // Scale reticle to match splat size (same as manipulation ring)
+        const ringScale = this.getPlacementRingScale();
+        this.reticle.scale.set(ringScale, ringScale, 1);
         
         // Debug plane will be updated after splat is placed
         
