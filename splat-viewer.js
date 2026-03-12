@@ -5245,41 +5245,34 @@ function injectSplatViewerStyles() {
         splat-viewer {
             display: block;
             width: 100%;
-            min-height: 100vh;
-            height: 100vh;
+            min-height: 0;
+            height: 100%;
             position: relative;
             box-sizing: border-box;
             overflow: visible; /* Ensure AR button and other UI elements are not clipped */
         }
         
-        /* Mobile landscape: ensure minimum height for proper display */
+        /* Optional standalone mode: force full viewport sizing */
+        splat-viewer[full-viewport] {
+            min-height: 100vh;
+            height: 100vh;
+        }
+        
+        /* Keep previous mobile-landscape behavior only in full-viewport mode */
         @media (max-height: 500px) and (orientation: landscape) {
-            splat-viewer {
+            splat-viewer[full-viewport] {
                 min-height: 500px;
                 height: auto;
             }
-        }
-        
-        /* When splat-viewer is not full viewport, use auto height */
-        splat-viewer:not([style*="height: 100vh"]) {
-            height: auto;
-            min-height: 400px;
         }
 
         /* Critical: canvas-container dimensions */
         #canvas-container {
             width: 100%;
             height: 100%;
-            min-height: 100%;
+            min-height: 0;
             position: relative;
             overflow: visible; /* Don't clip UI elements like AR button */
-        }
-        
-        /* Mobile landscape: ensure canvas container has minimum height */
-        @media (max-height: 500px) and (orientation: landscape) {
-            #canvas-container {
-                min-height: 500px;
-            }
         }
 
         /* Critical: canvas sizing */
@@ -5630,12 +5623,14 @@ class SplatViewerElement extends HTMLElement {
     }
 
     _createInternalStructure() {
+        const fullViewport = this.hasAttribute('full-viewport');
+
         // Set element styles
         this.style.display = 'block';
         this.style.position = 'relative';
         this.style.width = '100%';
-        this.style.height = '100%';
-        this.style.minHeight = '400px';
+        this.style.height = fullViewport ? '100vh' : '100%';
+        this.style.minHeight = fullViewport ? '100vh' : '0';
         this.style.overflow = 'visible'; // Ensure AR button and UI elements are not clipped
 
         // Create canvas container
