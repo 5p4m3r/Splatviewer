@@ -375,6 +375,91 @@ export class SplatViewer {
         }
     }
 
+    /**
+     * Compute a uniform scale factor that makes the splat fit in a ~2-unit
+     * bounding sphere in desktop mode (accounting for transform-rotate).
+     */
+    computeDesktopAutoFitScale() {
+        const raw = this.getRawSplatBounds();
+        if (!raw) return 1;
+
+        const box = raw.clone();
+        const transform = this.options.transform || {};
+
+        // Apply desktop rotation so the size accounts for orientation
+        if (transform.rotate) {
+            const euler = new window.THREE.Euler(
+                (transform.rotate.x || 0) * Math.PI / 180,
+                (transform.rotate.y || 0) * Math.PI / 180,
+                (transform.rotate.z || 0) * Math.PI / 180, 'XYZ');
+            const q = new window.THREE.Quaternion().setFromEuler(euler);
+            const corners = [
+                new window.THREE.Vector3(box.min.x, box.min.y, box.min.z),
+                new window.THREE.Vector3(box.max.x, box.min.y, box.min.z),
+                new window.THREE.Vector3(box.min.x, box.max.y, box.min.z),
+                new window.THREE.Vector3(box.max.x, box.max.y, box.min.z),
+                new window.THREE.Vector3(box.min.x, box.min.y, box.max.z),
+                new window.THREE.Vector3(box.max.x, box.min.y, box.max.z),
+                new window.THREE.Vector3(box.min.x, box.max.y, box.max.z),
+                new window.THREE.Vector3(box.max.x, box.max.y, box.max.z)
+            ];
+            corners.forEach(c => c.applyQuaternion(q));
+            box.makeEmpty();
+            corners.forEach(c => box.expandByPoint(c));
+        }
+
+        const size = box.max.clone().sub(box.min);
+        const maxDim = Math.max(size.x, size.y, size.z);
+        if (maxDim === 0) return 1;
+
+        return 2.0 / maxDim;
+    }
+
+    /**
+     * Position the camera so the entire splat is centered in the viewport.
+     * Uses aspect-ratio-aware framing so the model fills the viewport
+     * tightly in whichever axis is the constraining one.
+     */
+    autoFrameCamera() {
+        if (!this.camera || !this.splatMesh) return;
+
+        const bb = this.getSplatBoundingBox();
+        if (!bb) return;
+
+        const center = new window.THREE.Vector3();
+        bb.getCenter(center);
+        const size = bb.max.clone().sub(bb.min);
+        if (size.lengthSq() === 0) return;
+
+        // Sync camera aspect ratio with actual viewport
+        const w = this.container ? this.container.clientWidth : window.innerWidth;
+        const h = this.container ? this.container.clientHeight : window.innerHeight;
+        if (w > 0 && h > 0) {
+            this.camera.aspect = w / h;
+            this.camera.updateProjectionMatrix();
+        }
+
+        const vFov = this.camera.fov * Math.PI / 180;
+        const aspect = this.camera.aspect;
+        const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+
+        // Distance to fit vertical extent (front face of model)
+        const distV = (size.y / 2) / Math.tan(vFov / 2);
+        // Distance to fit horizontal extent (widest of X or Z)
+        const distH = (Math.max(size.x, size.z) / 2) / Math.tan(hFov / 2);
+
+        // Use the larger + half depth so front face is never clipped, plus padding
+        const dist = Math.max(distV, distH) * 1.1 + size.z / 2;
+
+        this.camera.position.set(center.x, center.y, bb.max.z + dist);
+        this.camera.lookAt(center);
+
+        if (this.orbitControls) {
+            this.orbitControls.target.copy(center);
+            this.orbitControls.update();
+        }
+    }
+
     applyTransformToMesh(mesh, mode) {
         if (!mesh || !window.THREE) return;
         
@@ -390,23 +475,68 @@ export class SplatViewer {
         } else {
             transform = this.options.transform || null;
         }
-        
-        if (!transform) {
-            // If no transform, reset to origin for desktop mode
-            if (mode === 'desktop') {
-                mesh.position.set(0, 0, 0);
-                mesh.rotation.set(0, 0, 0);
-                mesh.scale.set(1, 1, 1);
-                mesh.updateMatrix();
-                mesh.updateMatrixWorld(true);
+
+        // --- Desktop mode: auto-fit to viewport ---
+        if (mode === 'desktop') {
+            // Recompute until authoritative Spark bounds are cached
+            if (!this._desktopAutoFitScale || !this._cachedRawBounds) {
+                this._desktopAutoFitScale = this.computeDesktopAutoFitScale();
             }
+            const fitScale = this._desktopAutoFitScale;
+
+            // User's transform-scale acts as a relative multiplier on auto-fit
+            const us = (transform && transform.scale) || { x: 1, y: 1, z: 1 };
+            mesh.scale.set(
+                (us.x || 1) * fitScale,
+                (us.y || 1) * fitScale,
+                (us.z || 1) * fitScale
+            );
+
+            // Apply rotation
+            if (transform && transform.rotate) {
+                const euler = new window.THREE.Euler(
+                    (transform.rotate.x || 0) * Math.PI / 180,
+                    (transform.rotate.y || 0) * Math.PI / 180,
+                    (transform.rotate.z || 0) * Math.PI / 180, 'XYZ');
+                mesh.quaternion.setFromEuler(euler);
+                mesh.rotation.setFromQuaternion(mesh.quaternion);
+            } else {
+                mesh.quaternion.identity();
+                mesh.rotation.set(0, 0, 0);
+            }
+
+            // Center horizontally (XZ) but keep ground at Y=0 since
+            // splats always have their origin at the ground plane.
+            const raw = this.getRawSplatBounds();
+            if (raw) {
+                const rawCenter = new window.THREE.Vector3();
+                raw.getCenter(rawCenter);
+                rawCenter.set(
+                    rawCenter.x * mesh.scale.x,
+                    rawCenter.y * mesh.scale.y,
+                    rawCenter.z * mesh.scale.z
+                );
+                rawCenter.applyQuaternion(mesh.quaternion);
+                const off = (transform && transform.position) || { x: 0, y: 0, z: 0 };
+                mesh.position.set(
+                    (off.x || 0) - rawCenter.x,
+                    (off.y || 0),
+                    (off.z || 0) - rawCenter.z
+                );
+            } else {
+                mesh.position.set(0, 0, 0);
+            }
+
+            mesh.updateMatrix();
+            mesh.updateMatrixWorld(true);
+            return;
+        }
+
+        // --- AR / VR modes: use explicit transforms as before ---
+        if (!transform) {
             return;
         }
         
-        // Apply position (reset to origin first if in desktop mode to ensure proper centering)
-        if (mode === 'desktop') {
-            mesh.position.set(0, 0, 0);
-        }
         if (transform.position) {
             mesh.position.set(
                 transform.position.x || 0,
@@ -415,7 +545,6 @@ export class SplatViewer {
             );
         }
         
-        // Apply scale
         if (transform.scale) {
             mesh.scale.set(
                 transform.scale.x || 1,
@@ -424,19 +553,15 @@ export class SplatViewer {
             );
         }
         
-        // Apply rotation (in degrees, convert to radians)
         if (transform.rotate) {
             const rotationX = (transform.rotate.x || 0) * (Math.PI / 180);
             const rotationY = (transform.rotate.y || 0) * (Math.PI / 180);
             const rotationZ = (transform.rotate.z || 0) * (Math.PI / 180);
-            
-            // Apply the rotations directly (Y-up coordinate system)
             const euler = new window.THREE.Euler(rotationX, rotationY, rotationZ, 'XYZ');
             mesh.quaternion.setFromEuler(euler);
             mesh.rotation.setFromQuaternion(mesh.quaternion);
         }
         
-        // Force matrix update
         mesh.updateMatrix();
         mesh.updateMatrixWorld(true);
     }
@@ -1261,6 +1386,7 @@ export class SplatViewer {
 
             // Create SplatMesh with Spark
             this._cachedRawBounds = null;
+            this._desktopAutoFitScale = null;
             this.splatMesh = new this.library.SplatMesh({ url: url });
             
             // Hide mesh initially to prevent visible jump before transform is applied
@@ -1403,9 +1529,21 @@ export class SplatViewer {
             // Setup OrbitControls for desktop/non-AR mode first
             this.setupOrbitControls();
 
-            // Re-apply camera transform after OrbitControls setup to ensure correct positioning
-            // This ensures camera position and lookAt are set correctly and OrbitControls target is at origin
-            this.applyCameraTransform();
+            // Frame the camera to fit the auto-scaled splat in the viewport
+            this.autoFrameCamera();
+
+            // Spark's `initialized` promise resolves once splat data is fully
+            // parsed – only then does getBoundingBox() return real values.
+            // Re-apply auto-fit with authoritative bounds at that point.
+            if (this.splatMesh.initialized && typeof this.splatMesh.initialized.then === 'function') {
+                this.splatMesh.initialized.then(() => {
+                    if (!this.splatMesh) return;
+                    this._cachedRawBounds = null;
+                    this._desktopAutoFitScale = null;
+                    this.applyTransformToMesh(this.splatMesh, 'desktop');
+                    this.autoFrameCamera();
+                }).catch(() => { /* load errors handled elsewhere */ });
+            }
 
             // Ensure WebXR is enabled on the renderer
             if (this.renderer) {
@@ -1817,11 +1955,18 @@ export class SplatViewer {
         if (this._cachedRawBounds) return this._cachedRawBounds;
 
         let box = null;
+        let fromSpark = false;
 
         // Spark's native method (accurate, reads real splat positions)
         if (typeof this.splatMesh.getBoundingBox === 'function') {
             try {
-                box = this.splatMesh.getBoundingBox(true);
+                const b = this.splatMesh.getBoundingBox(true);
+                // Validate: must be finite and non-empty
+                if (b && isFinite(b.min.x) && isFinite(b.max.x) &&
+                    b.max.x >= b.min.x && b.max.y >= b.min.y && b.max.z >= b.min.z) {
+                    box = b;
+                    fromSpark = true;
+                }
             } catch (_) { /* not initialized yet */ }
         }
 
@@ -1830,19 +1975,24 @@ export class SplatViewer {
             if (!this.splatMesh.geometry.boundingBox) {
                 this.splatMesh.geometry.computeBoundingBox();
             }
-            if (this.splatMesh.geometry.boundingBox) {
-                box = this.splatMesh.geometry.boundingBox.clone();
+            const gb = this.splatMesh.geometry.boundingBox;
+            if (gb && isFinite(gb.min.x) && isFinite(gb.max.x)) {
+                box = gb.clone();
             }
         }
 
+        // Last resort: unit box (not cached so we retry next frame)
         if (!box) {
-            box = new window.THREE.Box3().setFromCenterAndSize(
+            return new window.THREE.Box3().setFromCenterAndSize(
                 new window.THREE.Vector3(0, 0, 0),
                 new window.THREE.Vector3(1, 1, 1)
             );
         }
 
-        this._cachedRawBounds = box;
+        // Only cache if we got authoritative Spark bounds
+        if (fromSpark) {
+            this._cachedRawBounds = box;
+        }
         return box;
     }
 
@@ -1886,46 +2036,34 @@ export class SplatViewer {
     }
 
     /**
-     * Get the bounding box of the splat mesh in world space (for visualization)
-     * Returns the bounding box in world space, accounting for current position, rotation, and scale
+     * Get the bounding box of the splat mesh in world space.
+     * Transforms the raw (untransformed) bounds through matrixWorld so
+     * scale, rotation and position are applied exactly once.
      */
     getSplatBoundingBox() {
         if (!this.splatMesh) return null;
-        
-        // Ensure matrix is up to date
+
+        const raw = this.getRawSplatBounds();
+        if (!raw) return null;
+
         this.splatMesh.updateMatrixWorld(true);
-        
-        // Get local bounding box first
-        const localBox = this.getSplatBoundingBoxLocal();
-        if (!localBox) {
-            // Fallback: return null if we can't compute local bounding box
-            return null;
-        }
-        
-        // Transform local bounding box to world space
-        // We need to transform all 8 corners of the box
+
         const corners = [
-            new window.THREE.Vector3(localBox.min.x, localBox.min.y, localBox.min.z),
-            new window.THREE.Vector3(localBox.max.x, localBox.min.y, localBox.min.z),
-            new window.THREE.Vector3(localBox.min.x, localBox.max.y, localBox.min.z),
-            new window.THREE.Vector3(localBox.max.x, localBox.max.y, localBox.min.z),
-            new window.THREE.Vector3(localBox.min.x, localBox.min.y, localBox.max.z),
-            new window.THREE.Vector3(localBox.max.x, localBox.min.y, localBox.max.z),
-            new window.THREE.Vector3(localBox.min.x, localBox.max.y, localBox.max.z),
-            new window.THREE.Vector3(localBox.max.x, localBox.max.y, localBox.max.z)
+            new window.THREE.Vector3(raw.min.x, raw.min.y, raw.min.z),
+            new window.THREE.Vector3(raw.max.x, raw.min.y, raw.min.z),
+            new window.THREE.Vector3(raw.min.x, raw.max.y, raw.min.z),
+            new window.THREE.Vector3(raw.max.x, raw.max.y, raw.min.z),
+            new window.THREE.Vector3(raw.min.x, raw.min.y, raw.max.z),
+            new window.THREE.Vector3(raw.max.x, raw.min.y, raw.max.z),
+            new window.THREE.Vector3(raw.min.x, raw.max.y, raw.max.z),
+            new window.THREE.Vector3(raw.max.x, raw.max.y, raw.max.z)
         ];
-        
-        // Transform corners to world space
-        corners.forEach(corner => {
-            corner.applyMatrix4(this.splatMesh.matrixWorld);
-        });
-        
-        // Create world-space bounding box from transformed corners
+
+        corners.forEach(c => c.applyMatrix4(this.splatMesh.matrixWorld));
+
         const worldBox = new window.THREE.Box3();
         worldBox.makeEmpty();
-        corners.forEach(corner => {
-            worldBox.expandByPoint(corner);
-        });
+        corners.forEach(c => worldBox.expandByPoint(c));
         
         return worldBox;
     }
@@ -4752,8 +4890,8 @@ export class SplatViewer {
             // Restore OrbitControls for desktop mode (same as initial load)
             this.setupOrbitControls();
             
-            // Re-apply camera transform when exiting AR (same as initial load)
-            this.applyCameraTransform();
+            // Frame the camera to fit the auto-scaled splat in the viewport
+            this.autoFrameCamera();
             
             // Ensure mesh is visible and properly set up (same as initial load)
             if (this.splatMesh) {
