@@ -1260,6 +1260,7 @@ export class SplatViewer {
             }
 
             // Create SplatMesh with Spark
+            this._cachedRawBounds = null;
             this.splatMesh = new this.library.SplatMesh({ url: url });
             
             // Hide mesh initially to prevent visible jump before transform is applied
@@ -1804,70 +1805,83 @@ export class SplatViewer {
      * Returns the bounding box in local space (relative to mesh origin)
      * This is used to calculate the offset from mesh origin to bottom of model
      */
-    getSplatBoundingBoxLocal() {
+    /**
+     * Get the raw (untransformed) bounding box of the splat data.
+     * Prefers Spark's native SplatMesh.getBoundingBox() which reads actual
+     * splat center positions. Falls back to geometry.boundingBox (unreliable
+     * for Spark meshes) then to a unit box. Result is cached per mesh.
+     */
+    getRawSplatBounds() {
         if (!this.splatMesh) return null;
-        
-        // Compute bounding box accounting for scale and rotation
-        // We need to transform the bounding box to account for rotation
-        // but keep it in a space where we can calculate the bottom offset
-        
-        const box = new window.THREE.Box3();
-        
-        // Try to get bounding box from the mesh geometry (local space)
-        if (this.splatMesh.geometry) {
+
+        if (this._cachedRawBounds) return this._cachedRawBounds;
+
+        let box = null;
+
+        // Spark's native method (accurate, reads real splat positions)
+        if (typeof this.splatMesh.getBoundingBox === 'function') {
+            try {
+                box = this.splatMesh.getBoundingBox(true);
+            } catch (_) { /* not initialized yet */ }
+        }
+
+        // Fallback: THREE.js geometry bounds (may be inaccurate for Spark)
+        if (!box && this.splatMesh.geometry) {
             if (!this.splatMesh.geometry.boundingBox) {
                 this.splatMesh.geometry.computeBoundingBox();
             }
             if (this.splatMesh.geometry.boundingBox) {
-                // Copy local bounding box (before any transforms)
-                box.copy(this.splatMesh.geometry.boundingBox);
-                
-                // Apply scale first
-                const scale = this.splatMesh.scale;
-                if (scale && (scale.x !== 1 || scale.y !== 1 || scale.z !== 1)) {
-                    box.min.x *= scale.x;
-                    box.min.y *= scale.y;
-                    box.min.z *= scale.z;
-                    box.max.x *= scale.x;
-                    box.max.y *= scale.y;
-                    box.max.z *= scale.z;
-                }
-                
-                // Apply rotation to bounding box
-                // Rotation can change which corner is the "bottom"
-                // We need to transform all 8 corners of the box and find the new min/max
-                if (this.splatMesh.quaternion && !this.splatMesh.quaternion.equals(new window.THREE.Quaternion())) {
-                    const corners = [
-                        new window.THREE.Vector3(box.min.x, box.min.y, box.min.z),
-                        new window.THREE.Vector3(box.max.x, box.min.y, box.min.z),
-                        new window.THREE.Vector3(box.min.x, box.max.y, box.min.z),
-                        new window.THREE.Vector3(box.max.x, box.max.y, box.min.z),
-                        new window.THREE.Vector3(box.min.x, box.min.y, box.max.z),
-                        new window.THREE.Vector3(box.max.x, box.min.y, box.max.z),
-                        new window.THREE.Vector3(box.min.x, box.max.y, box.max.z),
-                        new window.THREE.Vector3(box.max.x, box.max.y, box.max.z)
-                    ];
-                    
-                    // Transform all corners by rotation
-                    corners.forEach(corner => {
-                        corner.applyQuaternion(this.splatMesh.quaternion);
-                    });
-                    
-                    // Find new min/max after rotation
-                    box.makeEmpty();
-                    corners.forEach(corner => {
-                        box.expandByPoint(corner);
-                    });
-                }
+                box = this.splatMesh.geometry.boundingBox.clone();
             }
-        } else {
-            // Fallback: use a default bounding box if geometry not available
-            box.setFromCenterAndSize(
+        }
+
+        if (!box) {
+            box = new window.THREE.Box3().setFromCenterAndSize(
                 new window.THREE.Vector3(0, 0, 0),
                 new window.THREE.Vector3(1, 1, 1)
             );
         }
-        
+
+        this._cachedRawBounds = box;
+        return box;
+    }
+
+    getSplatBoundingBoxLocal() {
+        if (!this.splatMesh) return null;
+
+        const raw = this.getRawSplatBounds();
+        if (!raw) return null;
+
+        const box = raw.clone();
+
+        // Apply current mesh scale
+        const scale = this.splatMesh.scale;
+        if (scale && (scale.x !== 1 || scale.y !== 1 || scale.z !== 1)) {
+            box.min.x *= scale.x;
+            box.min.y *= scale.y;
+            box.min.z *= scale.z;
+            box.max.x *= scale.x;
+            box.max.y *= scale.y;
+            box.max.z *= scale.z;
+        }
+
+        // Apply current mesh rotation
+        if (this.splatMesh.quaternion && !this.splatMesh.quaternion.equals(new window.THREE.Quaternion())) {
+            const corners = [
+                new window.THREE.Vector3(box.min.x, box.min.y, box.min.z),
+                new window.THREE.Vector3(box.max.x, box.min.y, box.min.z),
+                new window.THREE.Vector3(box.min.x, box.max.y, box.min.z),
+                new window.THREE.Vector3(box.max.x, box.max.y, box.min.z),
+                new window.THREE.Vector3(box.min.x, box.min.y, box.max.z),
+                new window.THREE.Vector3(box.max.x, box.min.y, box.max.z),
+                new window.THREE.Vector3(box.min.x, box.max.y, box.max.z),
+                new window.THREE.Vector3(box.max.x, box.max.y, box.max.z)
+            ];
+            corners.forEach(corner => corner.applyQuaternion(this.splatMesh.quaternion));
+            box.makeEmpty();
+            corners.forEach(corner => box.expandByPoint(corner));
+        }
+
         return box;
     }
 
@@ -1934,21 +1948,9 @@ export class SplatViewer {
         }
 
         // --- Pre-placement: predict size under AR transforms ---
-        let box = null;
-        if (this.splatMesh.geometry) {
-            if (!this.splatMesh.geometry.boundingBox) {
-                this.splatMesh.geometry.computeBoundingBox();
-            }
-            if (this.splatMesh.geometry.boundingBox) {
-                box = this.splatMesh.geometry.boundingBox.clone();
-            }
-        }
-        if (!box) {
-            box = new window.THREE.Box3().setFromCenterAndSize(
-                new window.THREE.Vector3(0, 0, 0),
-                new window.THREE.Vector3(1, 1, 1)
-            );
-        }
+        const raw = this.getRawSplatBounds();
+        if (!raw) return 1;
+        const box = raw.clone();
 
         const tAr = this.options.transformAr;
         const sx = tAr?.scale?.x || 1;
