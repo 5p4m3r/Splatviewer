@@ -32,7 +32,7 @@ Live example at https://toniomundry.com/splatviewer for fullpage viewer and http
     splat-src="your-file.splat"
     camera-position="0,3,5"
     camera-look-at="0,0,0"
-    transform-scale="0.5,0.5,0.5"
+    camera-distance-multiplier="0.9"
     enable-ar="true">
 </splat-viewer>
 
@@ -50,7 +50,7 @@ That's it! The viewer handles all initialization, UI, and controls automatically
 - **`splat-src`** (required): Path to the splat file (supports `.splat`, `.sog`, `.ply`, `.spz` formats)
   - Example: `splat-src="scene.splat"` or `splat-src="model.sog"`
 
-- **`enable-ar`** (optional): Enable/disable AR mode button
+- **`enable-ar`** (optional): Enable/disable AR mode button (`AR`)
   - Values: `"true"` | `"false"` (default: `"true"`)
 
 - **`fps`** (optional): Show FPS performance monitor
@@ -72,11 +72,16 @@ That's it! The viewer handles all initialization, UI, and controls automatically
   - Format: `"x,y,z"` or `"[x,y,z]"` (default: `"0,0,0"`)
   - Example: `camera-look-at="0,0,0"`
 
-#### Desktop Transform
+#### Desktop Framing and Transform
 
-- **`transform-scale`**: Scale for desktop mode
-  - Format: `"x,y,z"` or `"[x,y,z]"` (default: `"1,1,1"`)
-  - Example: `transform-scale="0.5,0.5,0.5"`
+- **`camera-distance-multiplier`**: Camera distance multiplier for auto-framing in desktop mode
+  - Format: Number (default: `1.0`)
+  - Example: `camera-distance-multiplier="0.9"` (closer/larger framing)
+  - Use values `< 1.0` for closer framing and `> 1.0` for farther framing
+  - URL override: `?cameraDistanceMultiplier=0.9` (alias `cameraDist`)
+
+- **`transform-scale`**: Parsed for backward compatibility but ignored in desktop auto-fit mode
+  - Desktop size should be tuned with `camera-distance-multiplier` instead
 
 - **`transform-position`**: Position offset for desktop mode
   - Format: `"x,y,z"` or `"[x,y,z]"` (default: `"0,0,0"`)
@@ -119,7 +124,7 @@ That's it! The viewer handles all initialization, UI, and controls automatically
     splat-src="SatsumaVase.splat"
     camera-position="0,2,2"
     camera-look-at="0,0.8,0"
-    transform-scale="0.1,0.1,0.1"
+    camera-distance-multiplier="0.9"
     transform-position="0,0,0"
     transform-rotate="180,0,0"
     transform-ar-scale="0.1,0.1,0.1"

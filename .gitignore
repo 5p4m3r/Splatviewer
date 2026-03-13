@@ -26,6 +26,7 @@ npm-debug.log*
 
 # Development/Test files
 dev/
+testing/
 test-server.js
 test.ply
 test.sog
