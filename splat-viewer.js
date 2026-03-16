@@ -169,10 +169,6 @@ export class SplatViewer {
         this.arFrameLoopActive = false; // Track if AR frame loop is active
         this._isExitingAR = false; // Prevent double-calling exitAR
         this.arTapHandler = null; // Tap event handler for cleanup
-        this.arTouchEndHandler = null; // touchend handler for cleanup
-        this.arSelectHandler = null; // XRSession select handler for cleanup
-        this.arSessionEndHandler = null; // XRSession end handler for cleanup
-        this._selectStartEndBound = false; // Guard to prevent duplicate bind
         this.desktopAnimationLoop = null; // Store the original desktop animation loop
         this.arTransformControls = null; // Transform controls for AR mode (move, rotate, scale)
         this.arTransformMode = 'translate'; // Current transform mode: 'translate', 'rotate', 'scale'
@@ -196,15 +192,6 @@ export class SplatViewer {
         this.floorTrackingLogInterval = 0; // Counter for throttled logging
         this._splatFirstRenderComplete = false; // Flag to track when splat first renders
         this.arSupported = false; // Track AR support status
-        this.lastTick = null; // AR frame timestamp for stable delta
-        this.debugAR = false; // Gate verbose AR logs
-        this.enableLegacyProcessInput = false; // Keep old path opt-in only
-    }
-
-    debugLog(...args) {
-        if (this.debugAR) {
-            console.log(...args);
-        }
     }
 
     async init() {
@@ -401,7 +388,6 @@ export class SplatViewer {
         const box = raw.clone();
         const transform = this.options.transform || {};
 
-        // Apply desktop rotation so the size accounts for orientation
         if (transform.rotate) {
             const euler = new window.THREE.Euler(
                 (transform.rotate.x || 0) * Math.PI / 180,
@@ -463,8 +449,17 @@ export class SplatViewer {
         // Distance to fit horizontal extent (widest of X or Z)
         const distH = (Math.max(size.x, size.z) / 2) / Math.tan(hFov / 2);
 
-        // Use the larger + half depth so front face is never clipped, plus padding
-        const dist = Math.max(distV, distH) * 1.1 + size.z / 2;
+        // Tighter framing for constrained mobile embeds (e.g. Teia object slot)
+        // plus optional camera distance multiplier for per-scene tuning.
+        const baseDist = Math.max(distV, distH) * 0.78 + size.z * 0.35;
+        const distanceMultiplier = Number(
+            this.options?.cameraDistanceMultiplier ??
+            this.options?.transform?.cameraDistanceMultiplier ??
+            1
+        );
+        const safeDistanceMultiplier =
+            Number.isFinite(distanceMultiplier) && distanceMultiplier > 0 ? distanceMultiplier : 1;
+        const dist = baseDist * safeDistanceMultiplier;
 
         this.camera.position.set(center.x, center.y, bb.max.z + dist);
         this.camera.lookAt(center);
@@ -472,6 +467,19 @@ export class SplatViewer {
         if (this.orbitControls) {
             this.orbitControls.target.copy(center);
             this.orbitControls.update();
+        }
+    }
+
+    /**
+     * Optional runtime override for desktop camera framing distance.
+     * 1.0 = default, <1 moves closer, >1 moves farther.
+     */
+    setCameraDistanceMultiplier(multiplier) {
+        const value = Number(multiplier);
+        if (!Number.isFinite(value) || value <= 0) return;
+        this.options.cameraDistanceMultiplier = value;
+        if (this.splatMesh && this.camera) {
+            this.autoFrameCamera();
         }
     }
 
@@ -499,15 +507,11 @@ export class SplatViewer {
             }
             const fitScale = this._desktopAutoFitScale;
 
-            // User's transform-scale acts as a relative multiplier on auto-fit
-            const us = (transform && transform.scale) || { x: 1, y: 1, z: 1 };
-            mesh.scale.set(
-                (us.x || 1) * fitScale,
-                (us.y || 1) * fitScale,
-                (us.z || 1) * fitScale
-            );
+            // Desktop mode uses pure auto-fit scale.
+            // transform-scale is intentionally ignored on desktop to avoid
+            // fighting with camera auto-framing.
+            mesh.scale.set(fitScale, fitScale, fitScale);
 
-            // Apply rotation
             if (transform && transform.rotate) {
                 const euler = new window.THREE.Euler(
                     (transform.rotate.x || 0) * Math.PI / 180,
@@ -1196,11 +1200,12 @@ export class SplatViewer {
                 }
                 
                 try {
-                    // Request session with proper features (model-viewer approach)
+                    // In iframes, omit dom-overlay to avoid fullscreen permission block (objkt, etc.)
+                    const inIframe = typeof window !== 'undefined' && window.self !== window.top;
                     const sessionInit = {
                         requiredFeatures: ['hit-test'],
-                        optionalFeatures: ['dom-overlay', 'light-estimation'],
-                        domOverlay: { root: this.arOverlay }
+                        optionalFeatures: inIframe ? ['light-estimation'] : ['dom-overlay', 'light-estimation'],
+                        ...(inIframe ? {} : { domOverlay: { root: this.arOverlay } })
                     };
                     
                     const session = await navigator.xr.requestSession('immersive-ar', sessionInit);
@@ -1217,12 +1222,10 @@ export class SplatViewer {
                     // Session handlers
                     this.onARStart();
                     
-                    this.arSessionEndHandler = () => {
+                    session.addEventListener('end', () => {
                         this.exitARMode();
                         this.onAREnd();
-                        this.arSessionEndHandler = null;
-                    };
-                    session.addEventListener('end', this.arSessionEndHandler, { once: true });
+                    });
                     
                 } catch (error) {
                     console.error('Failed to start AR:', error);
@@ -1590,9 +1593,6 @@ export class SplatViewer {
             return;
         }
 
-        // Keep AR camera and hit tests in the same reference space.
-        this.renderer.xr.setReferenceSpaceType('local');
-
         // Reset exit flag in case it was left in a bad state
         this._isExitingAR = false;
 
@@ -1601,7 +1601,6 @@ export class SplatViewer {
         this._lastFallbackReticlePos = null;
         this._placedViaFallback = false;
         this._reticleFromRealFloor = false;
-        this.lastTick = null;
         
         this.xrSession = session;
         
@@ -1681,7 +1680,7 @@ export class SplatViewer {
         // Setup AR frame loop (this replaces the desktop loop)
         this.setupARFrameLoop();
 
-        // Setup touch input for placement and session gesture handlers.
+        // Setup touch input for placement
         this.setupTransientHitTest();
         this.setupARTapEvent();
         
@@ -1751,11 +1750,13 @@ export class SplatViewer {
 
             // Request session with hit-test required (like model-viewer)
             // See: https://github.com/google/model-viewer/blob/master/packages/model-viewer/src/three-components/ARRenderer.ts
+            // In iframes, omit dom-overlay to avoid fullscreen permission block (objkt, etc.)
+            const inIframe = typeof window !== 'undefined' && window.self !== window.top;
             let session = null;
             const sessionInit = {
                 requiredFeatures: ['hit-test'],
-                optionalFeatures: ['local-floor', 'dom-overlay', 'light-estimation'],  // local-floor for stable tracking
-                domOverlay: { root: overlayElement }
+                optionalFeatures: inIframe ? ['local-floor', 'light-estimation'] : ['local-floor', 'dom-overlay', 'light-estimation'],
+                ...(inIframe ? {} : { domOverlay: { root: overlayElement } })
             };
             
             try {
@@ -1764,17 +1765,23 @@ export class SplatViewer {
                 // Fallback: try with hit-test as optional
                 const fallbackInit = {
                     requiredFeatures: [],
-                    optionalFeatures: ['hit-test', 'local-floor', 'dom-overlay', 'light-estimation'],
-                    domOverlay: { root: overlayElement }
+                    optionalFeatures: inIframe ? ['hit-test', 'local-floor', 'light-estimation'] : ['hit-test', 'local-floor', 'dom-overlay', 'light-estimation'],
+                    ...(inIframe ? {} : { domOverlay: { root: overlayElement } })
                 };
                 session = await navigator.xr.requestSession('immersive-ar', fallbackInit);
             }
 
             this.xrSession = session;
             
-            // Use local reference space for parity with model-viewer.
-            // Keep camera and hit tests in the same space to avoid drift.
-            this.renderer.xr.setReferenceSpaceType('local');
+            // Set reference space type - prefer local-floor for floor-relative coordinates
+            // With local-floor: Y=0 is at floor level (easier math)
+            // With local: Y=0 is at device start position
+            const hasLocalFloor = session.enabledFeatures && 
+                (Array.from(session.enabledFeatures).includes('local-floor') || 
+                 session.enabledFeatures.has?.('local-floor'));
+            
+            // Use local-floor if available, otherwise local
+            this.renderer.xr.setReferenceSpaceType(hasLocalFloor ? 'local-floor' : 'local');
             
             this.renderer.xr.setSession(session);
             
@@ -1959,17 +1966,6 @@ export class SplatViewer {
         return hitPosition;
     }
 
-    cancelInitialHitSource() {
-        if (this.initialHitSource) {
-            try {
-                this.initialHitSource.cancel();
-            } catch (_error) {
-                // Ignore source cancellation errors during teardown/session transitions.
-            }
-            this.initialHitSource = null;
-        }
-    }
-
     /**
      * Get the bounding box of the splat mesh in local space (model-viewer approach)
      * Returns the bounding box in local space (relative to mesh origin)
@@ -2096,62 +2092,16 @@ export class SplatViewer {
         const worldBox = new window.THREE.Box3();
         worldBox.makeEmpty();
         corners.forEach(c => worldBox.expandByPoint(c));
-        
+
         return worldBox;
     }
 
     /**
-     * Compute the expected XZ footprint of the splat under AR transforms.
-     * Before placement the mesh still carries desktop transforms, so we
-     * go back to the raw geometry bounds and apply the AR scale/rotation
-     * from the component attributes.  After placement the mesh already
-     * has the correct AR transforms, so we use the live world-space box.
+     * Placement ring scale (fixed). Used for both reticle and manipulation ring.
+     * @returns {number} Scale factor for the ring geometry (RingGeometry outer radius 0.25)
      */
     getPlacementRingScale() {
-        if (!this.splatMesh) return 1;
-
-        if (this.splatPlaced) {
-            const bb = this.getSplatBoundingBox();
-            if (!bb) return 1;
-            const sz = bb.max.clone().sub(bb.min);
-            return Math.max(0.1, Math.max(sz.x, sz.z) * 0.6);
-        }
-
-        // --- Pre-placement: predict size under AR transforms ---
-        const raw = this.getRawSplatBounds();
-        if (!raw) return 1;
-        const box = raw.clone();
-
-        const tAr = this.options.transformAr;
-        const sx = tAr?.scale?.x || 1;
-        const sy = tAr?.scale?.y || 1;
-        const sz = tAr?.scale?.z || 1;
-        box.min.set(box.min.x * sx, box.min.y * sy, box.min.z * sz);
-        box.max.set(box.max.x * sx, box.max.y * sy, box.max.z * sz);
-
-        if (tAr?.rotate) {
-            const euler = new window.THREE.Euler(
-                (tAr.rotate.x || 0) * Math.PI / 180,
-                (tAr.rotate.y || 0) * Math.PI / 180,
-                (tAr.rotate.z || 0) * Math.PI / 180, 'XYZ');
-            const q = new window.THREE.Quaternion().setFromEuler(euler);
-            const corners = [
-                new window.THREE.Vector3(box.min.x, box.min.y, box.min.z),
-                new window.THREE.Vector3(box.max.x, box.min.y, box.min.z),
-                new window.THREE.Vector3(box.min.x, box.max.y, box.min.z),
-                new window.THREE.Vector3(box.max.x, box.max.y, box.min.z),
-                new window.THREE.Vector3(box.min.x, box.min.y, box.max.z),
-                new window.THREE.Vector3(box.max.x, box.min.y, box.max.z),
-                new window.THREE.Vector3(box.min.x, box.max.y, box.max.z),
-                new window.THREE.Vector3(box.max.x, box.max.y, box.max.z)
-            ];
-            corners.forEach(c => c.applyQuaternion(q));
-            box.makeEmpty();
-            corners.forEach(c => box.expandByPoint(c));
-        }
-
-        const size = box.max.clone().sub(box.min);
-        return Math.max(0.1, Math.max(size.x, size.z) * 0.6);
+        return 1;
     }
 
     /**
@@ -2272,18 +2222,18 @@ export class SplatViewer {
     showManipulationFeedback() {
         if (!this.manipulationRing || !this.splatMesh) return;
         
-        this.debugLog('🟢 [RING] SHOW - gesture started');
+        console.log('🟢 [RING] SHOW - gesture started');
         
         // Cancel any pending hide timeout
         if (this.manipulationRingHideTimeout) {
-            this.debugLog('🟢 [RING] Cancelled pending hide timeout');
+            console.log('🟢 [RING] Cancelled pending hide timeout');
             clearTimeout(this.manipulationRingHideTimeout);
             this.manipulationRingHideTimeout = null;
         }
         
         // Cancel any ongoing fade
         if (this.manipulationRingFadeStartTime > 0) {
-            this.debugLog('🟢 [RING] Cancelled ongoing fade');
+            console.log('🟢 [RING] Cancelled ongoing fade');
         }
         this.manipulationRingFadeStartTime = 0;
         
@@ -2294,7 +2244,8 @@ export class SplatViewer {
             this.splatMesh.position.z
         );
         
-        // Scale ring to match splat footprint
+        // Scale ring to match splat footprint (pass position for screen capping)
+        const ringPos = new window.THREE.Vector3(this.splatMesh.position.x, this.splatMesh.position.y + 0.002, this.splatMesh.position.z);
         const ringScale = this.getPlacementRingScale();
         this.manipulationRing.scale.set(ringScale, ringScale, 1);
         
@@ -2321,6 +2272,7 @@ export class SplatViewer {
         );
         
         // Update scale to follow splat size (e.g. during pinch)
+        const ringPos = new window.THREE.Vector3(this.splatMesh.position.x, this.splatMesh.position.y + 0.002, this.splatMesh.position.z);
         const ringScale = this.getPlacementRingScale();
         this.manipulationRing.scale.set(ringScale, ringScale, 1);
     }
@@ -2332,20 +2284,20 @@ export class SplatViewer {
      */
     hideManipulationFeedback() {
         if (!this.manipulationRing || !this.manipulationRing.visible) {
-            this.debugLog('🔴 [RING] HIDE called but ring not visible, ignoring');
+            console.log('🔴 [RING] HIDE called but ring not visible, ignoring');
             return;
         }
         
-        this.debugLog('🔴 [RING] HIDE - gesture ended, starting 100ms delay');
+        console.log('🔴 [RING] HIDE - gesture ended, starting 100ms delay');
         
         // Use a short delay before starting fade to avoid flicker
         // If a new gesture starts within this time, the timeout is cancelled
         this.manipulationRingHideTimeout = setTimeout(() => {
-            this.debugLog('🔴 [RING] Delay complete, starting fade');
+            console.log('🔴 [RING] Delay complete, starting fade');
             this.manipulationRingHideTimeout = null;
             if (this.manipulationRing && this.manipulationRing.visible) {
                 this.manipulationRingFadeStartTime = performance.now();
-                this.debugLog('🔴 [RING] Fade started at:', this.manipulationRingFadeStartTime);
+                console.log('🔴 [RING] Fade started at:', this.manipulationRingFadeStartTime);
             }
         }, 100); // 100ms delay before fade starts
     }
@@ -2366,14 +2318,14 @@ export class SplatViewer {
         
         // Log every 10% progress
         if (Math.floor(progress * 10) !== Math.floor((progress - 0.033) * 10)) {
-            this.debugLog('🔴 [RING] Fade:', Math.round(progress * 100) + '%', 'opacity:', opacity.toFixed(2));
+            console.log('🔴 [RING] Fade:', Math.round(progress * 100) + '%', 'opacity:', opacity.toFixed(2));
         }
         
         if (progress >= 1) {
             this.manipulationRing.visible = false;
             this.manipulationRing.material.opacity = 0;
             this.manipulationRingFadeStartTime = 0;
-            this.debugLog('🔴 [RING] Fade complete - ring hidden');
+            console.log('🔴 [RING] Fade complete - ring hidden');
         }
     }
     
@@ -2708,11 +2660,8 @@ export class SplatViewer {
         if (wasHidden) {
             this.onFloorDetected();
         }
-        this.reticle.position.set(
-            transform.position.x,
-            transform.position.y,
-            transform.position.z
-        );
+        const reticlePos = new window.THREE.Vector3(transform.position.x, transform.position.y, transform.position.z);
+        this.reticle.position.copy(reticlePos);
         // Scale reticle to match splat size (same as manipulation ring)
         const ringScale = this.getPlacementRingScale();
         this.reticle.scale.set(ringScale, ringScale, 1);
@@ -2793,16 +2742,8 @@ export class SplatViewer {
                 // Using same 'local' reference space for camera and hit-testing (model-viewer approach)
             }
 
-            // Calculate stable frame delta in milliseconds.
-            // Use XR callback time directly to avoid predictedDisplayTime unit issues.
-            if (this.lastTick == null) {
-                this.lastTick = time;
-            }
-            let delta = time - this.lastTick;
-            if (!isFinite(delta) || delta < 0) {
-                delta = 16.67;
-            }
-            this.lastTick = time;
+            // Calculate delta time for smooth interpolation (model-viewer approach)
+            const delta = frame ? (frame.predictedDisplayTime ? frame.predictedDisplayTime * 1000 : 16.67) : 16.67;
             
             // Track phone position vs floor for debugging
             this.trackFloorOffset(frame);
@@ -2842,14 +2783,15 @@ export class SplatViewer {
                                 this.goalPosition.y = hitPoint.y;
                                 this.arFloorHeight = hitPoint.y;
                                 this._placedViaFallback = false;
-                                this.cancelInitialHitSource();
-                                this.debugLog('📏 [POST-PLACEMENT] Real floor detected, adjusting Y to:', hitPoint.y.toFixed(3));
+                                this.initialHitSource.cancel();
+                                this.initialHitSource = null;
+                                console.log('📏 [POST-PLACEMENT] Real floor detected, adjusting Y to:', hitPoint.y.toFixed(3));
                             }
                         }
                     } catch (e) {
                         // Hit source may have been invalidated
                         this._placedViaFallback = false;
-                        this.cancelInitialHitSource();
+                        this.initialHitSource = null;
                     }
                 }
 
@@ -2914,7 +2856,7 @@ export class SplatViewer {
                     const pose = hit.getPose(referenceSpace);
                     if (pose) {
                         const pos = pose.transform.position;
-                        this.debugLog('🎯 [RETICLE] Y position:', pos.y.toFixed(3), 'm');
+                        console.log('🎯 [RETICLE] Y position:', pos.y.toFixed(3), 'm');
                         this._lastReticleLogTime = performance.now();
                     }
                 }
@@ -2959,7 +2901,7 @@ export class SplatViewer {
         // Accounts for AR scale so the distance matches the placed model size.
         // Capped to 3m because splats can have very large raw coordinate systems
         // (unlike glTF which is always in meters), making uncapped values huge.
-        const MAX_PLACEMENT_RADIUS = 5;
+        const MAX_PLACEMENT_RADIUS = 3;
         let worldRadius = 0;
         if (this.splatMesh) {
             const rawBounds = this.getRawSplatBounds();
@@ -3028,6 +2970,8 @@ export class SplatViewer {
         const wasHidden = !this.reticle.visible;
         this.reticle.visible = true;
         this.reticle.position.copy(reticlePos);
+        const ringScale = this.getPlacementRingScale();
+        this.reticle.scale.set(ringScale, ringScale, 1);
 
         if (wasHidden) {
             this.onFloorDetected();
@@ -3147,6 +3091,8 @@ export class SplatViewer {
             
             this.reticle.visible = true;
             this.reticle.position.copy(intersectionPoint);
+            const ringScale = this.getPlacementRingScale();
+            this.reticle.scale.set(ringScale, ringScale, 1);
             
             // Notify UX system that floor was detected (model-viewer style)
             if (wasHidden) {
@@ -3157,7 +3103,7 @@ export class SplatViewer {
             
             // Keep reticle flat on ground (already rotated in createARReticle())
 
-            // Store for tap placement
+            // Store for tap placement (detected plane = real floor)
             this.pendingHitPosition = intersectionPoint.clone();
             this._reticleFromRealFloor = true;
             // Identity quaternion -- model stays upright on the floor (no flip)
@@ -3175,68 +3121,104 @@ export class SplatViewer {
 
     setupARTapEvent() {
         if (!this.xrSession) {
-            this.debugLog('⚠️ [TAP SETUP] No XR session available');
+            console.log('⚠️ [TAP SETUP] No XR session available');
             return;
         }
-
+        
+        console.log('✅ [TAP SETUP] Setting up tap event handlers');
+        
+        // Listen for select/click events to place or move the splat
+        // Store reference to session for checking if it's still valid
         const session = this.xrSession;
-        const handlePlacementTap = (event) => {
-            // Ignore events during AR exit, if session changed, or if session is gone.
-            if (this._isExitingAR || this.xrSession !== session || !this.xrSession) {
+        const self = this;
+        
+        session.addEventListener('select', (event) => {
+            // Ignore events during AR exit, if session changed, or no longer active
+            if (self._isExitingAR || self.xrSession !== session || !self.xrSession) {
+                console.log('🟣 [SELECT EVENT] Ignored - AR exit in progress or session changed');
                 return;
             }
-
-            if (!this.splatPlaced) {
-                if (this.pendingHitPosition && this.pendingHitQuaternion) {
-                    this._placedViaFallback = !this._reticleFromRealFloor;
-                    this.placeSplatOnGround(this.pendingHitPosition, this.pendingHitQuaternion);
-                    this.pendingHitPosition = null;
-                    this.pendingHitQuaternion = null;
+            
+            console.log('🟣 [SELECT EVENT] splatPlaced:', self.splatPlaced, 'pendingHit:', !!self.pendingHitPosition, 'hitTestSource:', !!self.hitTestSource);
+            if (!self.splatPlaced) {
+                if (self.pendingHitPosition && self.pendingHitQuaternion) {
+                    console.log('🟢 [PLACEMENT] Using hit-test position');
+                    self._placedViaFallback = !self._reticleFromRealFloor;
+                    self.placeSplatOnGround(self.pendingHitPosition, self.pendingHitQuaternion);
+                    self.pendingHitPosition = null;
+                    self.pendingHitQuaternion = null;
                 } else {
-                    this.placeSplatAtFixedDistance();
+                    console.log('🟡 [PLACEMENT] No hit-test data, using fixed distance');
+                    self.placeSplatAtFixedDistance();
                 }
-                return;
+            } else if (self.splatPlaced && self.pendingHitPosition && self.arTransformMode === 'translate') {
+                // Move splat to new hit position
+                console.log('🟢 [MOVE] Moving splat to new position');
+                self.moveSplatToPosition(self.pendingHitPosition);
+                self.pendingHitPosition = null;
             }
-
-            if (this.pendingHitPosition && this.arTransformMode === 'translate') {
-                this.moveSplatToPosition(this.pendingHitPosition);
-                this.pendingHitPosition = null;
-            }
-        };
-
-        // Keep a removable select handler per session.
-        if (this.arSelectHandler) {
-            session.removeEventListener('select', this.arSelectHandler);
-        }
-        this.arSelectHandler = handlePlacementTap;
-        session.addEventListener('select', this.arSelectHandler);
-
-        // Desktop-testing click/touch shims.
+        });
+        
+        // Also listen for click events on the canvas (for desktop testing)
+        // Note: This should only handle placement, not gestures
+        // Gestures are handled by setupARGestureControls()
         if (this.renderer && this.renderer.domElement) {
             const canvas = this.renderer.domElement;
-
-            if (this.arTapHandler) {
-                canvas.removeEventListener('click', this.arTapHandler);
-            }
-            if (this.arTouchEndHandler) {
-                canvas.removeEventListener('touchend', this.arTouchEndHandler);
-            }
-
-            this.arTapHandler = (event) => handlePlacementTap(event);
-            this.arTouchEndHandler = (event) => {
-                if (this.splatPlaced || !this.xrSession) {
-                    return;
-                }
-                const touchDuration = this.lastTouchStartTime != null
-                    ? event.timeStamp - this.lastTouchStartTime
-                    : 0;
-                if (touchDuration < 150) {
-                    handlePlacementTap(event);
+            const clickHandler = (event) => {
+                console.log('🟣 [CLICK/TAP] Event:', event.type, 'splatPlaced:', this.splatPlaced, 'xrSession:', !!this.xrSession);
+                // Only handle if it's a quick tap (not a drag/gesture)
+                // Check if this was a quick tap by checking if no movement occurred
+                if (!this.splatPlaced && this.xrSession) {
+                    console.log('🟡 [TAP] Attempting placement - pendingHit:', !!this.pendingHitPosition, 'hitTestSource:', !!this.hitTestSource);
+                    if (this.pendingHitPosition && this.pendingHitQuaternion) {
+                        console.log('🟢 [PLACEMENT] Using hit-test position (click)');
+                        this._placedViaFallback = !this._reticleFromRealFloor;
+                        this.placeSplatOnGround(this.pendingHitPosition, this.pendingHitQuaternion);
+                        this.pendingHitPosition = null;
+                        this.pendingHitQuaternion = null;
+                    } else {
+                        console.log('🟡 [PLACEMENT] No hit-test data, using fixed distance (click)');
+                        this.placeSplatAtFixedDistance();
+                    }
+                } else if (this.splatPlaced && this.xrSession && this.pendingHitPosition && this.arTransformMode === 'translate') {
+                    // Move splat to new hit position - only if it's a quick tap
+                    // Don't interfere with drag gestures
+                    const touchDuration = event.timeStamp - (this.lastTouchStartTime || 0);
+                    if (touchDuration < 200) { // Quick tap only
+                        console.log('🟢 [MOVE] Moving splat (click)');
+                        this.moveSplatToPosition(this.pendingHitPosition);
+                        this.pendingHitPosition = null;
+                    }
                 }
             };
-
-            canvas.addEventListener('click', this.arTapHandler);
-            canvas.addEventListener('touchend', this.arTouchEndHandler, { capture: false });
+            // Use click for desktop, but be careful with touch events
+            // We'll use a timeout to distinguish taps from drags
+            canvas.addEventListener('click', clickHandler);
+            // Don't add touchend here - let gesture handler manage it
+            // Only add touchend if we need it for placement, but make it non-capturing
+            const touchEndHandler = (event) => {
+                console.log('🟣 [TOUCH END] Event:', event.type, 'splatPlaced:', this.splatPlaced, 'xrSession:', !!this.xrSession);
+                // Only handle if it's a very quick tap (placement only)
+                if (!this.splatPlaced && this.xrSession) {
+                    const touchDuration = event.timeStamp - (this.lastTouchStartTime || 0);
+                    console.log('🟡 [TOUCH END] Duration:', touchDuration, 'ms (threshold: 150ms)');
+                    if (touchDuration < 150) { // Very quick tap
+                        console.log('🟢 [TOUCH END] Quick tap detected - attempting placement');
+                        if (this.pendingHitPosition && this.pendingHitQuaternion) {
+                            clickHandler(event);
+                        } else {
+                            console.log('🟡 [PLACEMENT] No hit-test data, using fixed distance (touchend)');
+                            this.placeSplatAtFixedDistance();
+                        }
+                    } else {
+                        console.log('⚠️ [TOUCH END] Not a quick tap, ignoring (duration too long)');
+                    }
+                }
+            };
+            canvas.addEventListener('touchend', touchEndHandler, { capture: false }); // Non-capturing
+            
+            // Store handler for cleanup
+            this.arTapHandler = clickHandler;
         }
     }
 
@@ -3400,7 +3382,8 @@ export class SplatViewer {
         // floor data. If placement was via fallback (estimated floor), keep the
         // source alive so we can adjust Y when the real floor is detected.
         if (this.initialHitSource && !this._placedViaFallback) {
-            this.cancelInitialHitSource();
+            this.initialHitSource.cancel();
+            this.initialHitSource = null;
         }
         
         // Update debug plane (if enabled)
@@ -3462,12 +3445,24 @@ export class SplatViewer {
 
 
     setupTransientHitTest() {
-        // Transient hit-test source is created in initializeHitTest().
-        // This method only binds session gesture lifecycle events once.
-        if (!this.xrSession || this._selectStartEndBound) return;
+        // Setup WebXR transient hit-test source for touch input (like model-viewer)
+        if (!this.xrSession) return;
+        
+        // Request transient hit-test source for touchscreen input
+        if (this.xrSession.requestHitTestSourceForTransientInput) {
+            this.xrSession.requestHitTestSourceForTransientInput({profile: 'generic-touchscreen'})
+                .then(hitTestSource => {
+                    this.transientHitTestSource = hitTestSource;
+                    console.log('Transient hit-test source created for touch input');
+                })
+                .catch(error => {
+                    console.warn('Failed to create transient hit-test source:', error);
+                });
+        }
+        
+        // Setup selectstart and selectend handlers (like model-viewer)
         this.xrSession.addEventListener('selectstart', this.onSelectStart);
         this.xrSession.addEventListener('selectend', this.onSelectEnd);
-        this._selectStartEndBound = true;
     }
     
     onSelectStart = (event) => {
@@ -3497,9 +3492,14 @@ export class SplatViewer {
         this.xrInputStartPositions = [];
         this._lastActiveCount = 0;
         this._lastInputSourcesCount = 0;
+        // Reset gesture state
+        this.lastAngle = undefined;
         this.initialSeparation = 0;
         this.initialScale = 1;
-        this.debugLog('Gesture ended');
+        this.isRotating = false;
+        this.isTranslating = false;
+        this.isTwoHandInteraction = false;
+        console.log('Gesture ended');
     }
     
     
@@ -3511,14 +3511,14 @@ export class SplatViewer {
         
         // Track when inputSources count changes (indicates finger down/up for screen inputs)
         if (inputSources.length !== this._lastInputSourcesCount) {
-            this.debugLog('🔵 [INPUT] inputSources count changed:', this._lastInputSourcesCount, '→', inputSources.length);
+            console.log('🔵 [INPUT] inputSources count changed:', this._lastInputSourcesCount, '→', inputSources.length);
             this._lastInputSourcesCount = inputSources.length;
         }
         
         // If no inputs, check if we need to end gesture
         if (!inputSources || inputSources.length === 0) {
             if (this.xrInputStartPositions.length > 0) {
-                this.debugLog('🔵 [GESTURE] All fingers lifted (inputSources empty)');
+                console.log('🔵 [GESTURE] All fingers lifted (inputSources empty)');
                 this.hideManipulationFeedback();
                 this.xrInputStartPositions = [];
                 this.xrInputSources = [];
@@ -3539,10 +3539,10 @@ export class SplatViewer {
         // Debug: log raw input state once per second
         if (!this._lastInputDebugTime || performance.now() - this._lastInputDebugTime > 1000) {
             if (inputSources.length > 0) {
-                this.debugLog('🔍 [INPUT DEBUG] inputSources.length:', inputSources.length);
+                console.log('🔍 [INPUT DEBUG] inputSources.length:', inputSources.length);
                 for (let i = 0; i < inputSources.length; i++) {
                     const src = inputSources[i];
-                    this.debugLog('  [' + i + ']', {
+                    console.log('  [' + i + ']', {
                         targetRayMode: src.targetRayMode,
                         hasGamepad: !!src.gamepad,
                         axes: src.gamepad?.axes ? Array.from(src.gamepad.axes).map(v => v.toFixed(2)) : null,
@@ -3640,7 +3640,7 @@ export class SplatViewer {
                 this.initialSeparation = separation;
                 this.initialScale = mesh.scale.x; // Capture current scale (assuming uniform)
                 
-                this.debugLog('🔷 [SCALE] New pinch gesture started:', {
+                console.log('🔷 [SCALE] New pinch gesture started:', {
                     initialSeparation: separation.toFixed(3),
                     initialScale: this.initialScale.toFixed(3)
                 });
@@ -3809,12 +3809,12 @@ export class SplatViewer {
         // Reset tracking if no active inputs (gesture ended)
         // Only log when state changes to avoid spam
         if (activeInputs.length !== this._lastActiveCount) {
-            this.debugLog('🔵 [INPUT] Active inputs changed:', this._lastActiveCount, '→', activeInputs.length);
+            console.log('🔵 [INPUT] Active inputs changed:', this._lastActiveCount, '→', activeInputs.length);
             this._lastActiveCount = activeInputs.length;
         }
         
         if (activeInputs.length === 0 && this.xrInputStartPositions.length > 0) {
-            this.debugLog('🔵 [GESTURE] Inputs released (was tracking', this.xrInputStartPositions.length, 'inputs)');
+            console.log('🔵 [GESTURE] Inputs released (was tracking', this.xrInputStartPositions.length, 'inputs)');
             
             // Hide manipulation feedback with fade out (model-viewer style)
             this.hideManipulationFeedback();
@@ -3837,9 +3837,8 @@ export class SplatViewer {
     }
     
     processInput(frame) {
-        // Legacy path kept only for compatibility.
-        // Active AR interactions are handled by processXRInput().
-        if (!this.enableLegacyProcessInput) return;
+        // Process touch input using transient hit-test (like model-viewer)
+        if (!this.transientHitTestSource || !this.splatPlaced || !this.splatMesh) return;
         
         const fingers = frame.getHitTestResultsForTransientInput(this.transientHitTestSource);
         if (!fingers || fingers.length === 0) return;
@@ -4612,7 +4611,10 @@ export class SplatViewer {
             try { this.hitTestSource.cancel(); } catch (e) {}
             this.hitTestSource = null;
         }
-        this.cancelInitialHitSource();
+        if (this.initialHitSource) {
+            try { this.initialHitSource.cancel(); } catch (e) {}
+            this.initialHitSource = null;
+        }
         
         // Clean up local-floor reference space
         this.localFloorReferenceSpace = null;
@@ -4652,11 +4654,8 @@ export class SplatViewer {
                 if (this.arTapHandler && this.renderer && this.renderer.domElement) {
                     const canvas = this.renderer.domElement;
                     canvas.removeEventListener('click', this.arTapHandler);
+                    canvas.removeEventListener('touchend', this.arTapHandler);
                     this.arTapHandler = null;
-                }
-                if (this.arTouchEndHandler && this.renderer && this.renderer.domElement) {
-                    this.renderer.domElement.removeEventListener('touchend', this.arTouchEndHandler);
-                    this.arTouchEndHandler = null;
                 }
                 
                 // Remove transient hit-test source
@@ -4669,16 +4668,7 @@ export class SplatViewer {
                 if (this.xrSession) {
                     this.xrSession.removeEventListener('selectstart', this.onSelectStart);
                     this.xrSession.removeEventListener('selectend', this.onSelectEnd);
-                    if (this.arSelectHandler) {
-                        this.xrSession.removeEventListener('select', this.arSelectHandler);
-                    }
-                    if (this.arSessionEndHandler) {
-                        this.xrSession.removeEventListener('end', this.arSessionEndHandler);
-                    }
                 }
-                this.arSelectHandler = null;
-                this.arSessionEndHandler = null;
-                this._selectStartEndBound = false;
                 
                 // Reset gesture state
                 this.isTranslating = false;
@@ -4687,7 +4677,6 @@ export class SplatViewer {
                 this.inputSource = null;
                 this.lastDragPosition = null;
                 this.frame = null;
-                this.lastTick = null;
         
         // Remove AR reticle
         if (this.reticle && this.scene) {
@@ -5095,6 +5084,15 @@ function parseAttributes(container) {
             config.maxScale = maxScale;
         }
     }
+
+    // Optional camera distance multiplier (auto-frame override)
+    const cameraDistanceMultiplierAttr = container.getAttribute('camera-distance-multiplier');
+    if (cameraDistanceMultiplierAttr !== null) {
+        const cameraDistanceMultiplier = parseFloat(cameraDistanceMultiplierAttr);
+        if (!isNaN(cameraDistanceMultiplier) && cameraDistanceMultiplier > 0) {
+            config.cameraDistanceMultiplier = cameraDistanceMultiplier;
+        }
+    }
     
     // Parse camera config
     const cameraConfig = parseCameraConfig(container);
@@ -5146,7 +5144,16 @@ function parseURLParams() {
             config.enableAR = lower === 'ar';
         }
     }
-    
+
+    const cameraDistanceMultiplierParam =
+        urlParams.get('cameraDistanceMultiplier') || urlParams.get('cameraDist');
+    if (cameraDistanceMultiplierParam) {
+        const cameraDistanceMultiplier = parseFloat(cameraDistanceMultiplierParam);
+        if (!isNaN(cameraDistanceMultiplier) && cameraDistanceMultiplier > 0) {
+            config.cameraDistanceMultiplier = cameraDistanceMultiplier;
+        }
+    }
+
     return config;
 }
 
@@ -5162,6 +5169,7 @@ function getDefaultConfig() {
         theme: 'dark', // Default theme: 'dark' or 'light'
         minScale: 0.1, // Minimum scale for pinch/zoom gestures
         maxScale: 5.0, // Maximum scale for pinch/zoom gestures
+        cameraDistanceMultiplier: 1.0, // Optional auto-frame distance override
         transform: {
             cameraLookAt: [0, 0, 25],
             cameraPosition: { x: 0, y: 3, z: 5 },
@@ -5199,6 +5207,9 @@ function mergeConfig(defaults, attributes, urlParams) {
     if (attributes.theme) config.theme = attributes.theme;
     if (attributes.minScale !== undefined) config.minScale = attributes.minScale;
     if (attributes.maxScale !== undefined) config.maxScale = attributes.maxScale;
+    if (attributes.cameraDistanceMultiplier !== undefined) {
+        config.cameraDistanceMultiplier = attributes.cameraDistanceMultiplier;
+    }
     if (attributes.transform) {
         config.transform = { ...config.transform, ...attributes.transform };
     }
@@ -5217,6 +5228,9 @@ function mergeConfig(defaults, attributes, urlParams) {
     // Merge URL params (override everything)
     if (urlParams.splatFile) config.splatFile = urlParams.splatFile;
     if (urlParams.enableAR !== undefined) config.enableAR = urlParams.enableAR;
+    if (urlParams.cameraDistanceMultiplier !== undefined) {
+        config.cameraDistanceMultiplier = urlParams.cameraDistanceMultiplier;
+    }
     
     return config;
 }
@@ -5303,7 +5317,7 @@ function injectSplatViewerStyles() {
             font-weight: 500;
             height: 36px;
             line-height: 36px;
-            padding: 0 16px;
+            padding: 0 10px;
             position: absolute;
             bottom: 16px;
             right: 16px;
@@ -5624,7 +5638,7 @@ class SplatViewerElement extends HTMLElement {
 
     _createInternalStructure() {
         const fullViewport = this.hasAttribute('full-viewport');
-
+        
         // Set element styles
         this.style.display = 'block';
         this.style.position = 'relative';
@@ -5659,7 +5673,7 @@ class SplatViewerElement extends HTMLElement {
         const arButton = document.createElement('button');
         arButton.id = 'enter-ar-btn';
         arButton.className = 'ar-button hidden';
-        arButton.textContent = 'View in AR';
+        arButton.textContent = 'AR';
         this.appendChild(arButton);
 
         // Create AR overlay

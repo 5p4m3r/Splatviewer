@@ -540,6 +540,38 @@
         </div>
     </div>
 
+    <script>
+    // CSP workaround for hosts that block fetch(data:...) in embedded contexts.
+    // Spark stays unmodified; we only intercept wasm data URL fetches.
+    (() => {
+        const nativeFetch = window.fetch.bind(window);
+
+        function toUrlString(input) {
+            if (typeof input === "string") return input;
+            if (input && typeof input.url === "string") return input.url;
+            if (input && typeof input.href === "string") return input.href;
+            return "";
+        }
+
+        window.fetch = async (input, init) => {
+            const url = toUrlString(input);
+
+            if (url.startsWith("data:application/wasm;base64,")) {
+                const b64 = url.slice("data:application/wasm;base64,".length);
+                const bin = atob(b64);
+                const bytes = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+
+                return new Response(bytes, {
+                    status: 200,
+                    headers: { "Content-Type": "application/wasm" }
+                });
+            }
+
+            return nativeFetch(input, init);
+        };
+    })();
+    </script>
     <script type="module" src="splat-viewer.js"></script>
 </body>
 </html>
