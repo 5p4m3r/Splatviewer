@@ -49,13 +49,12 @@
 </head>
 <body>
     <splat-viewer
-         splat-src="SatsumaVase.compressed.ply"
+         splat-src="SatsumaVase.sog"
          camera-position="0,1,2"
          camera-look-at="0,0.8,0"
-         transform-scale="1,1,1"
          transform-position="0,0,0"
          transform-rotate="180,0,0"
-         transform-ar-scale="0.1,0.1,0.1"
+         transform-ar-scale="1,1,1"
          transform-ar-position="0,0.0,0"
          transform-ar-rotate="180,0,0"
          min-scale="0.05"
@@ -64,6 +63,38 @@
          fps="true">
     </splat-viewer>
 
+    <script>
+    // CSP workaround for hosts that block fetch(data:...) in embedded contexts.
+    // Spark stays unmodified; we only intercept wasm data URL fetches.
+    (() => {
+        const nativeFetch = window.fetch.bind(window);
+
+        function toUrlString(input) {
+            if (typeof input === "string") return input;
+            if (input && typeof input.url === "string") return input.url;
+            if (input && typeof input.href === "string") return input.href;
+            return "";
+        }
+
+        window.fetch = async (input, init) => {
+            const url = toUrlString(input);
+
+            if (url.startsWith("data:application/wasm;base64,")) {
+                const b64 = url.slice("data:application/wasm;base64,".length);
+                const bin = atob(b64);
+                const bytes = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+
+                return new Response(bytes, {
+                    status: 200,
+                    headers: { "Content-Type": "application/wasm" }
+                });
+            }
+
+            return nativeFetch(input, init);
+        };
+    })();
+    </script>
     <script type="module" src="splat-viewer.js"></script>
 </body>
 </html>

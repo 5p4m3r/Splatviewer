@@ -322,6 +322,10 @@
                 On desktop, it provides traditional 3D navigation controls for exploring scenes.
             </p>
             <p>
+                Desktop framing is now auto-fit by default. Use
+                <code>camera-distance-multiplier</code> to tune how close/far the camera sits after auto-framing.
+            </p>
+            <p>
                 This demo showcases the viewer with test files in different formats. All three formats 
                 (<code>test.splat</code>, <code>test.sog</code>, and <code>test.ply</code>) are displayed 
                 simultaneously in separate containers below.
@@ -361,7 +365,7 @@
                         splat-src="SatsumaVase.splat"
                         camera-position="0,1,2"
                         camera-look-at="0,0.8,0"
-                        transform-scale="1,1,1"
+                        camera-distance-multiplier="0.9"
                         transform-position="0,0,0"
                         transform-rotate="0,0,180"
                         transform-ar-scale="0.1,0.1,0.1"
@@ -383,7 +387,7 @@
                         splat-src="SatsumaVase.sog"
                         camera-position="0,1,2"
                         camera-look-at="0,0.8,0"
-                        transform-scale="1,1,1"
+                        camera-distance-multiplier="0.9"
                         transform-position="0,0,0"
                         transform-rotate="0,0,180"
                         transform-ar-scale="0.1,0.1,0.1"
@@ -405,7 +409,7 @@
                         splat-src="SatsumaVase.ply"
                         camera-position="0,1,2"
                         camera-look-at="0,0.8,0"
-                        transform-scale="1,1,1"
+                        camera-distance-multiplier="0.9"
                         transform-position="0,0,0"
                         transform-rotate="0,0,180"
                         transform-ar-scale="1,1,1"
@@ -536,6 +540,38 @@
         </div>
     </div>
 
+    <script>
+    // CSP workaround for hosts that block fetch(data:...) in embedded contexts.
+    // Spark stays unmodified; we only intercept wasm data URL fetches.
+    (() => {
+        const nativeFetch = window.fetch.bind(window);
+
+        function toUrlString(input) {
+            if (typeof input === "string") return input;
+            if (input && typeof input.url === "string") return input.url;
+            if (input && typeof input.href === "string") return input.href;
+            return "";
+        }
+
+        window.fetch = async (input, init) => {
+            const url = toUrlString(input);
+
+            if (url.startsWith("data:application/wasm;base64,")) {
+                const b64 = url.slice("data:application/wasm;base64,".length);
+                const bin = atob(b64);
+                const bytes = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+
+                return new Response(bytes, {
+                    status: 200,
+                    headers: { "Content-Type": "application/wasm" }
+                });
+            }
+
+            return nativeFetch(input, init);
+        };
+    })();
+    </script>
     <script type="module" src="splat-viewer.js"></script>
 </body>
 </html>
