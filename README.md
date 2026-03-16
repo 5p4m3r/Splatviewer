@@ -440,6 +440,35 @@ To update dependencies:
 - **Browser Requirements**: Requires modern browsers with WebGL 2.0 and ES6 module support
 - **HTTPS Requirement**: WebXR features require secure context (HTTPS or localhost) for security reasons
 
+## Embedding on NFT Platforms (objkt, teia)
+
+When embedding the splat viewer in iframes on platforms like [objkt.com](https://objkt.com) or [teia.art](https://teia.art), the platform must use specific iframe attributes for full functionality:
+
+### Required iframe attributes
+
+```html
+<iframe
+  src="https://your-viewer-url/index.html"
+  allow="accelerometer; camera; gyroscope; microphone; xr-spatial-tracking; fullscreen"
+  sandbox="allow-scripts allow-downloads allow-same-origin"
+></iframe>
+```
+
+- **`allow="... fullscreen"`** – Required for AR mode. WebXR immersive-ar needs fullscreen; without it, AR will fail with "fullscreen is not allowed".
+- **`connect-src` in CSP** – The viewer loads WASM from `data:` URLs. The page’s CSP must include `data:` in `connect-src`, e.g. `connect-src 'self' blob: data:`.
+
+### Known platform issues
+
+- **objkt.com**: If the viewer only appears in "advanced mode", the main embed may use a stricter sandbox or CSP. AR may not work if the iframe lacks `allow="fullscreen"`.
+- **teia.art**: Small iframe size can make the viewer hard to use. Use the "↗ Open in new tab" button in the top-right to open the full viewer.
+
+### Self-hosting requirements
+
+When you host the viewer (e.g. on IPFS, GitHub Pages), ensure:
+
+1. The HTML includes a CSP meta tag with `connect-src 'self' blob: data:` (see `example.html`).
+2. The viewer is served over HTTPS (required for WebXR).
+
 ## Troubleshooting
 
 ### AR Button Not Visible
@@ -476,6 +505,14 @@ To update dependencies:
 - Check browser console for 404 errors
 - Ensure import map in `index.html` points to correct paths
 - Verify CSP allows loading from `src/` directory
+
+### "Refused to connect" / CSP blocks data: URL (objkt, teia)
+
+If you see `Fetch API cannot load data:application/wasm;base64,... violates Content Security Policy` or `connect-src 'self' blob:'`:
+
+- The host page’s CSP is blocking `data:` URLs. The viewer needs `connect-src 'self' blob: data:'` to load its WASM.
+- **When you host the viewer**: Add a CSP meta tag with `connect-src 'self' blob: data:'` (see `example.html`).
+- **When embedded on objkt/teia**: The platform controls the iframe’s CSP. If they proxy or wrap your content, their CSP may override yours. In that case, AR and the 3D view may only work in “advanced mode” or when the platform relaxes restrictions. Report the issue to the platform.
 
 ## Credits
 

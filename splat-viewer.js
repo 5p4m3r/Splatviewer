@@ -26,8 +26,13 @@ async function loadSparkLibrary() {
         console.log('Spark library loaded from local src/ folder');
         return Spark;
     } catch (error) {
-        console.warn('Failed to load from local src/ folder, trying CDN fallback:', error.message);
-        // Fallback to CDN if local fails (for development flexibility)
+        // In embedded contexts (e.g. objkt.com iframe), external requests are blocked.
+        // Skip CDN fallback to avoid confusing errors and fail fast with a clear message.
+        const isEmbedded = typeof window !== 'undefined' && window.self !== window.top;
+        if (isEmbedded) {
+            throw new Error('Spark library failed to load. Ensure src/spark/ is bundled in your token.');
+        }
+        // Fallback to CDN for non-embedded (local development)
         try {
             // @ts-ignore - Dynamic import from CDN, TypeScript cannot resolve at compile time
             const Spark = await import('https://sparkjs.dev/releases/spark/0.1.10/spark.module.js');
@@ -139,7 +144,6 @@ export class SplatViewer {
             ...options
         };
         this.stats = null; // Stats.js instance for FPS monitoring
-        this.xrButton = null;
         this.exitARButton = null;
         this.statusDiv = null;
         this.statusFadeTimeout = null; // Timeout for fading out status messages
@@ -192,6 +196,7 @@ export class SplatViewer {
         this.floorTrackingLogInterval = 0; // Counter for throttled logging
         this._splatFirstRenderComplete = false; // Flag to track when splat first renders
         this.arSupported = false; // Track AR support status
+        this._lastReticleLogTime = 0; // Throttle reticle debug logging
     }
 
     async init() {
@@ -339,13 +344,14 @@ export class SplatViewer {
             // Desktop mode: orbit around origin
             const transform = this.options.transform || {};
             
-            // Apply camera position from config, or default
+            // Apply camera position from config, or default (supports both array and object format)
             if (transform.cameraPosition) {
-                this.camera.position.set(
-                    transform.cameraPosition.x || 0,
-                    transform.cameraPosition.y || 0,
-                    transform.cameraPosition.z || 10
-                );
+                const pos = transform.cameraPosition;
+                if (Array.isArray(pos) && pos.length >= 3) {
+                    this.camera.position.set(pos[0] || 0, pos[1] || 0, pos[2] || 10);
+                } else {
+                    this.camera.position.set(pos.x || 0, pos.y || 0, pos.z || 10);
+                }
             } else {
                 this.camera.position.set(0, 0, 10);
             }
@@ -368,11 +374,12 @@ export class SplatViewer {
             // AR mode: use transform if specified (for initial positioning)
             const transform = this.options.transform || {};
             if (transform.cameraPosition) {
-                this.camera.position.set(
-                    transform.cameraPosition.x || this.camera.position.x,
-                    transform.cameraPosition.y || this.camera.position.y,
-                    transform.cameraPosition.z || this.camera.position.z
-                );
+                const pos = transform.cameraPosition;
+                if (Array.isArray(pos) && pos.length >= 3) {
+                    this.camera.position.set(pos[0] ?? this.camera.position.x, pos[1] ?? this.camera.position.y, pos[2] ?? this.camera.position.z);
+                } else {
+                    this.camera.position.set(pos.x ?? this.camera.position.x, pos.y ?? this.camera.position.y, pos.z ?? this.camera.position.z);
+                }
             }
         }
     }
@@ -1053,15 +1060,23 @@ export class SplatViewer {
             }
         };
         
+        // Ensure our AR button always shows "AR" (not "View in AR" from libraries)
+        const ensureARButtonText = () => {
+            if (this.arButton && this.arButton.textContent?.trim()?.toLowerCase() !== 'ar') {
+                this.arButton.textContent = 'AR';
+            }
+        };
+
         // Initial search immediately
         searchAndHide();
+        ensureARButtonText();
         
-        // Search after delays to catch buttons created asynchronously
-        setTimeout(searchAndHide, 50);
-        setTimeout(searchAndHide, 100);
-        setTimeout(searchAndHide, 250);
-        setTimeout(searchAndHide, 500);
-        setTimeout(searchAndHide, 1000);
+        // Search after delays to catch buttons created asynchronously (esp. on mobile)
+        setTimeout(() => { searchAndHide(); ensureARButtonText(); }, 50);
+        setTimeout(() => { searchAndHide(); ensureARButtonText(); }, 100);
+        setTimeout(() => { searchAndHide(); ensureARButtonText(); }, 250);
+        setTimeout(() => { searchAndHide(); ensureARButtonText(); }, 500);
+        setTimeout(() => { searchAndHide(); ensureARButtonText(); }, 1000);
         
         // Use MutationObserver to catch buttons added dynamically
         if (typeof MutationObserver !== 'undefined') {
@@ -1160,6 +1175,7 @@ export class SplatViewer {
             navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
                 this.arSupported = supported;
                 if (supported && this.arButton) {
+                    this.arButton.textContent = 'AR'; // Ensure label stays "AR" (not "View in AR" etc.)
                     this.arButton.classList.remove('hidden');
                     this.arButton.style.display = '';
                     this.arButton.disabled = false;
@@ -1245,8 +1261,6 @@ export class SplatViewer {
                 this.exitAR();
             });
         }
-        
-        window.addEventListener('resize', () => this.onWindowResize());
     }
 
     /**
@@ -1273,7 +1287,10 @@ export class SplatViewer {
      */
     exitARMode() {
         // Show AR button, hide exit button
-        if (this.arButton) this.arButton.classList.remove('hidden');
+        if (this.arButton) {
+            this.arButton.textContent = 'AR'; // Ensure label stays "AR"
+            this.arButton.classList.remove('hidden');
+        }
         if (this.exitARButton) this.exitARButton.classList.remove('visible');
         if (this.arOverlay) this.arOverlay.classList.remove('active');
         if (this.controlsHint) this.controlsHint.classList.remove('hidden');
@@ -1691,9 +1708,8 @@ export class SplatViewer {
         if (this.arButton) {
             this.arButton.classList.add('hidden');
         }
-        const exitButton = document.getElementById('exit-ar-btn');
-        if (exitButton) {
-            exitButton.classList.remove('hidden');
+        if (this.exitARButton) {
+            this.exitARButton.classList.remove('hidden');
         }
 
         // Start in scanning state - show hand animation and prompt
@@ -2850,8 +2866,8 @@ export class SplatViewer {
             try {
                 const hitTestResults = frame.getHitTestResults(this.hitTestSource);
                 
-                // Debug: log reticle Y position occasionally
-                if (hitTestResults.length > 0 && !this._lastReticleLogTime || performance.now() - this._lastReticleLogTime > 2000) {
+                // Debug: log reticle Y position occasionally (throttled to every 2s)
+                if (hitTestResults.length > 0 && (!this._lastReticleLogTime || performance.now() - this._lastReticleLogTime > 2000)) {
                     const hit = hitTestResults[0];
                     const pose = hit.getPose(referenceSpace);
                     if (pose) {
@@ -3422,13 +3438,11 @@ export class SplatViewer {
         // Ensure mesh remains visible when transform controls are attached
         mesh.visible = true;
         
-        // Constrain translation to floor plane (Z-up coordinate system)
-        // We'll handle this in the change event
+        // Constrain translation to floor plane (Y-up coordinate system - WebXR/Three.js)
         this.arTransformControls.addEventListener('change', () => {
-            // Ensure the mesh stays on the ground plane
-            // Use fixed offset of 0 - mesh origin is assumed to be at ground level
-            const groundZ = 0; // Ground plane at Z=0
-            mesh.position.z = groundZ;
+            // Ensure the mesh stays on the ground plane (Y=0 in Y-up)
+            const groundY = 0;
+            mesh.position.y = groundY;
             
             // Update mesh matrix
             mesh.updateMatrix();
@@ -4807,10 +4821,10 @@ export class SplatViewer {
             });
         }, 100);
 
-        if (this.xrButton) {
-            this.xrButton.classList.remove('hidden');
-            this.xrButton.style.display = ''; // Remove inline display:none
-            this.xrButton.disabled = false; // Re-enable the button
+        if (this.arButton) {
+            this.arButton.classList.remove('hidden');
+            this.arButton.style.display = ''; // Remove inline display:none
+            this.arButton.disabled = false; // Re-enable the button
         }
         this.updateStatus('Exited AR mode.');
     }
@@ -4922,7 +4936,6 @@ export class SplatViewer {
         if (this.viewer && this.viewer.dispose) {
             this.viewer.dispose();
         }
-        window.removeEventListener('resize', () => this.onWindowResize());
     }
 }
 
